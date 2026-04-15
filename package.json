@@ -1,6 +1,6 @@
 {
   "name": "slidefluid",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "PDF to PPTX converter — AVSC / Visual Entropy Productions",
   "main": "src/main.js",
   "scripts": {
