@@ -46,20 +46,29 @@ jobs:
       - name: Build unpackaged apps (arm64 + x64)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npx electron-builder --mac --dir
+        run: |
+          npx electron-builder --mac --dir --arm64
+          npx electron-builder --mac --dir --x64
 
       - name: Ad-hoc code sign (fixes macOS "damaged" Gatekeeper error)
         run: |
-          codesign --deep --force --sign - "dist/mac-arm64/SlideFluid.app"
-          codesign --deep --force --sign - "dist/mac-x64/SlideFluid.app"
+          find dist -name "SlideFluid.app" -maxdepth 3 | while read app; do
+            echo "Signing: $app"
+            codesign --deep --force --sign - "$app"
+          done
 
-      - name: Package & publish Mac DMGs
+      - name: Package & publish arm64 DMG
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: |
-          npx electron-builder --mac dmg --arm64 --prepackaged dist/mac-arm64 --publish always
-          npx electron-builder --mac dmg --x64 --prepackaged dist/mac-x64 --publish always
+        run: npx electron-builder --mac dmg --arm64 --prepackaged dist/mac-arm64 --publish always
+
+      - name: Package & publish x64 DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --mac dmg --x64 --prepackaged dist/mac-x64 --publish always
+        continue-on-error: true
 
   # ---------------------------------------------------------------------------
   # Windows — x64 NSIS installer
