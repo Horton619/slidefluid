@@ -1,0 +1,77 @@
+{
+  "name": "slidefluid",
+  "version": "3.0.0",
+  "description": "PDF to PPTX converter — AVSC / Visual Entropy Productions",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node node_modules/electron/cli.js .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:all": "electron-builder --mac --win",
+    "release": "electron-builder --mac --publish always"
+  },
+  "build": {
+    "appId": "com.visualentropy.slidefluid",
+    "productName": "SlideFluid",
+    "copyright": "Copyright © 2026 AVSC / Visual Entropy Productions",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "backend/dist/**/*",
+      "vendor/poppler/**/*"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icons/icon.icns",
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icons/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Horton619",
+      "repo": "slidefluid"
+    },
+    "extraResources": [
+      {
+        "from": "vendor/poppler/${os}",
+        "to": "poppler",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "backend/dist/slidefluid_convert",
+        "to": "backend/slidefluid_convert"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
+  }
+}

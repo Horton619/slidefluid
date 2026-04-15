@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'">
+  <title>SlideFluid 3.0 — IPC Test Harness</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #070910;
+      color: #DDE2F0;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      padding: 20px;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    h1 { color: #3DFFCC; font-size: 16px; font-weight: 600; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      background: #0D1520;
+      color: #3DFFCC;
+      border: 1px solid #1E3A5F;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    button:hover { background: #1E3A5F; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    label { color: #8899BB; font-size: 11px; align-self: center; }
+    #log {
+      flex: 1;
+      background: #040608;
+      border: 1px solid #1E3A5F;
+      border-radius: 4px;
+      padding: 10px;
+      overflow-y: auto;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .log-info  { color: #DDE2F0; }
+    .log-ok    { color: #3DFFCC; }
+    .log-warn  { color: #FFCC44; }
+    .log-error { color: #FF6677; }
+    .log-json  { color: #88BBFF; }
+    #info-bar {
+      font-size: 11px;
+      color: #4466AA;
+      padding-top: 2px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>SlideFluid 3.0 — IPC Test Harness (Step 2)</h1>
+
+<div class="row">
+  <button id="btn-settings">Load Settings</button>
+  <button id="btn-version">App Version</button>
+  <button id="btn-platform">Platform Info</button>
+</div>
+
+<div class="row">
+  <button id="btn-pick-files">Open File Picker</button>
+  <button id="btn-pick-folder">Open Folder Picker</button>
+</div>
+
+<div class="row">
+  <button id="btn-preflight">Run Preflight</button>
+</div>
+
+<div class="row">
+  <button id="btn-convert">Start Conversion (enter path below)</button>
+  <button id="btn-cancel" disabled>Cancel</button>
+  <input id="pdf-path" type="text" placeholder="PDF path (optional)"
+    style="background:#0D1520;color:#DDE2F0;border:1px solid #1E3A5F;
+           padding:5px 10px;border-radius:4px;font-size:12px;flex:1;min-width:200px">
+</div>
+
+<div id="log"></div>
+<div id="info-bar">Ready — window.slidefluid is the contextBridge API</div>
+
+<script>
+  const log = document.getElementById('log');
+  const infoBar = document.getElementById('info-bar');
+  let unsubs = [];
+
+  function entry(msg, cls = 'log-info') {
+    const ts = new Date().toISOString().slice(11, 23);
+    const div = document.createElement('div');
+    div.className = cls;
+    div.textContent = `[${ts}] ${msg}`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function jsonEntry(obj) {
+    entry(JSON.stringify(obj, null, 0), 'log-json');
+  }
+
+  function err(msg) { entry(msg, 'log-error'); }
+  function ok(msg)  { entry(msg, 'log-ok'); }
+  function warn(msg){ entry(msg, 'log-warn'); }
+
+  // Guard
+  if (!window.slidefluid) {
+    err('window.slidefluid not found — preload may not be loaded');
+  } else {
+    ok('window.slidefluid API available');
+  }
+
+  // --- Settings ---
+  document.getElementById('btn-settings').onclick = async () => {
+    try {
+      const s = await window.slidefluid.getSettings();
+      ok('Settings loaded:');
+      jsonEntry(s);
+    } catch(e) { err('Settings error: ' + e.message); }
+  };
+
+  // --- Version ---
+  document.getElementById('btn-version').onclick = async () => {
+    try {
+      const v = await window.slidefluid.getVersion();
+      ok('App version: ' + v);
+    } catch(e) { err(e.message); }
+  };
+
+  // --- Platform ---
+  document.getElementById('btn-platform').onclick = async () => {
+    try {
+      const p = await window.slidefluid.getPlatform();
+      jsonEntry(p);
+    } catch(e) { err(e.message); }
+  };
+
+  // --- File picker ---
+  document.getElementById('btn-pick-files').onclick = async () => {
+    try {
+      const files = await window.slidefluid.openFilePicker();
+      if (files.length === 0) { warn('No files selected'); return; }
+      ok(`${files.length} file(s) selected:`);
+      files.forEach(f => entry('  ' + f));
+      document.getElementById('pdf-path').value = files[0];
+    } catch(e) { err(e.message); }
+  };
+
+  // --- Folder picker ---
+  document.getElementById('btn-pick-folder').onclick = async () => {
+    try {
+      const folder = await window.slidefluid.openFolderPicker();
+      if (!folder) { warn('No folder selected'); return; }
+      ok('Output folder set: ' + folder);
+      await window.slidefluid.setSetting('outputDir', folder);
+    } catch(e) { err(e.message); }
+  };
+
+  // --- Preflight ---
+  document.getElementById('btn-preflight').onclick = async () => {
+    entry('Running preflight...');
+    const unsub = window.slidefluid.onPreflightResult((payload) => {
+      unsub();
+      if (payload.error) {
+        err('Preflight spawn error: ' + payload.error);
+        return;
+      }
+      ok('Preflight results:');
+      const r = payload.results;
+      if (r) {
+        Object.entries(r).forEach(([check, res]) => {
+          const fn = res.ok ? ok : err;
+          fn(`  ${res.ok ? '✓' : '✗'} ${check.padEnd(18)} ${res.message}`);
+        });
+      }
+    });
+    await window.slidefluid.runPreflight();
+  };
+
+  // --- Conversion ---
+  const btnConvert = document.getElementById('btn-convert');
+  const btnCancel  = document.getElementById('btn-cancel');
+
+  function wireConversionListeners() {
+    const u1 = window.slidefluid.onConversionMessage((msg) => {
+      const cls = msg.type === 'error' ? 'log-error' :
+                  msg.type === 'done' || msg.type === 'batch_done' ? 'log-ok' : 'log-json';
+      entry(`[${msg.type}] ${JSON.stringify(msg)}`, cls);
+
+      if (msg.type === 'batch_done') {
+        window.slidefluid.notifyJobDone();
+        btnConvert.disabled = false;
+        btnCancel.disabled = true;
+        ok(`Batch done — ${msg.converted} converted, ${msg.errors} errors`);
+        unwire();
+      }
+    });
+
+    const u2 = window.slidefluid.onConversionStderr((p) => {
+      warn('[stderr] ' + p.message);
+    });
+
+    const u3 = window.slidefluid.onConversionExit((p) => {
+      if (p.cancelled) {
+        warn('Conversion cancelled by user');
+        btnConvert.disabled = false;
+        btnCancel.disabled = true;
+        window.slidefluid.notifyJobDone();
+        unwire();
+      } else if (p.code !== 0) {
+        err(`Python exited with code ${p.code}`);
+        btnConvert.disabled = false;
+        btnCancel.disabled = true;
+        window.slidefluid.notifyJobDone();
+        unwire();
+      }
+    });
+
+    const u4 = window.slidefluid.onConversionSpawnError((p) => {
+      err('Spawn error: ' + p.message);
+      btnConvert.disabled = false;
+      btnCancel.disabled = true;
+      unwire();
+    });
+
+    unsubs = [u1, u2, u3, u4];
+  }
+
+  function unwire() {
+    unsubs.forEach(u => u());
+    unsubs = [];
+  }
+
+  btnConvert.onclick = async () => {
+    const settings = await window.slidefluid.getSettings();
+    const pdfPath = document.getElementById('pdf-path').value.trim();
+
+    if (!pdfPath) {
+      warn('Enter a PDF path first (or use the file picker)');
+      return;
+    }
+    if (!settings.outputDir) {
+      warn('No output folder set — open the folder picker first');
+      return;
+    }
+
+    wireConversionListeners();
+    btnConvert.disabled = true;
+    btnCancel.disabled = false;
+
+    entry(`Starting conversion: ${pdfPath}`);
+    entry(`  → output dir: ${settings.outputDir}`);
+    entry(`  → DPI: ${settings.dpi}  fill: ${settings.fillMode}`);
+
+    const result = await window.slidefluid.startConversion({
+      files: [pdfPath],
+      outputDir: settings.outputDir,
+      dpi: settings.dpi,
+      fillMode: settings.fillMode,
+      suffix: settings.filenameSuffix || '',
+    });
+
+    if (!result.ok) {
+      err('Start failed: ' + result.error);
+      btnConvert.disabled = false;
+      btnCancel.disabled = true;
+      unwire();
+    }
+  };
+
+  btnCancel.onclick = async () => {
+    await window.slidefluid.cancelConversion();
+    btnCancel.disabled = true;
+    warn('Cancel sent — waiting for process to stop...');
+  };
+
+  // Surface API presence to info bar
+  infoBar.textContent = window.slidefluid
+    ? `API: ${Object.keys(window.slidefluid).length} methods exposed via contextBridge`
+    : 'ERROR: contextBridge API not available';
+</script>
+</body>
+</html>

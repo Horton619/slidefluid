@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en" data-skin="professional">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+  <title>SlideFluid 3.0</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <header>
+    <div class="header-logo">
+      <svg viewBox="0 0 172 96" xmlns="http://www.w3.org/2000/svg" aria-label="SlideFluid logo">
+        <rect x="2" y="12" width="38" height="50" rx="4" fill="#0d1e2e" stroke="#2a4a5a" stroke-width="1.4"/>
+        <path d="M28 12 L28 25 L40 25" fill="#0a2a20" stroke="#3DFFCC" stroke-width="0.9"/>
+        <path d="M28 12 L40 25 L40 62 Q40 64 38 64 L4 64 Q2 64 2 62 L2 14 Q2 12 4 12 Z" fill="#0d1e2e" stroke="#1E5A4a" stroke-width="1.2"/>
+        <path d="M28 12 L28 25 L40 25" fill="#0a2a20" stroke="#3DFFCC" stroke-width="0.9"/>
+        <line x1="9" y1="34" x2="32" y2="34" stroke="#3DFFCC" stroke-width="1.3" stroke-linecap="round" opacity="0.85"/>
+        <line x1="9" y1="40" x2="32" y2="40" stroke="#3DFFCC" stroke-width="1.3" stroke-linecap="round" opacity="0.55"/>
+        <line x1="9" y1="46" x2="27" y2="46" stroke="#3DFFCC" stroke-width="1.3" stroke-linecap="round" opacity="0.3"/>
+        <line x1="9" y1="52" x2="30" y2="52" stroke="#3DFFCC" stroke-width="1.3" stroke-linecap="round" opacity="0.15"/>
+        <path d="M46 38 L62 38" stroke="#3DFFCC" stroke-width="2.2" stroke-linecap="round"/>
+        <path d="M57.5 33.5 L63 38 L57.5 42.5" fill="none" stroke="#3DFFCC" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="67" y="5" width="76" height="58" rx="5" fill="#0a1820" stroke="#1E5A4a" stroke-width="1.4"/>
+        <rect x="71" y="9" width="68" height="47" rx="3" fill="#0a2a20"/>
+        <rect x="71" y="9" width="68" height="5" rx="2" fill="#3DFFCC"/>
+        <line x1="74" y1="21" x2="110" y2="21" stroke="#3DFFCC" stroke-width="1.6" stroke-linecap="round" opacity="0.7"/>
+        <line x1="74" y1="27" x2="100" y2="27" stroke="#3DFFCC" stroke-width="1.1" stroke-linecap="round" opacity="0.4"/>
+        <line x1="71" y1="33" x2="139" y2="33" stroke="#1E3A5F" stroke-width="0.7" opacity="0.8"/>
+        <rect x="75" y="37" width="10" height="17" rx="2" fill="#3DFFCC" opacity="0.25"/>
+        <rect x="87" y="41" width="10" height="13" rx="2" fill="#3DFFCC" opacity="0.45"/>
+        <rect x="99" y="35" width="10" height="19" rx="2" fill="#3DFFCC" opacity="0.9"/>
+        <rect x="111" y="39" width="10" height="15" rx="2" fill="#3DFFCC" opacity="0.6"/>
+        <rect x="123" y="43" width="10" height="11" rx="2" fill="#3DFFCC" opacity="0.35"/>
+        <line x1="75" y1="54" x2="133" y2="54" stroke="#3DFFCC" stroke-width="0.6" opacity="0.25"/>
+        <rect x="71" y="62" width="68" height="3" rx="1" fill="#0d1e2e" stroke="#1E3A5F" stroke-width="0.7"/>
+        <line x1="105" y1="65" x2="105" y2="78" stroke="#1E5A4a" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="100" y1="73" x2="91" y2="88" stroke="#1E3A5F" stroke-width="1.7" stroke-linecap="round"/>
+        <line x1="110" y1="73" x2="119" y2="88" stroke="#1E3A5F" stroke-width="1.7" stroke-linecap="round"/>
+        <line x1="86" y1="88" x2="124" y2="88" stroke="#1E3A5F" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <div class="header-wordmark">
+        <h1 class="header-title">Slide<span class="header-fluid">Fluid</span></h1>
+        <div class="header-tagline">PDF to PPTX</div>
+      </div>
+    </div>
+    <button id="btn-settings" title="Settings">&#9881;</button>
+  </header>
+
+  <main>
+
+    <!-- Left pane: drop zone + queue + progress + convert button -->
+    <section class="left-pane">
+
+      <div id="drop-zone">
+        <div class="dz-label">Drop PDFs here or click to browse</div>
+        <button id="btn-browse">Browse Files</button>
+      </div>
+
+      <div id="queue-list" role="list" aria-label="Conversion queue"></div>
+
+      <div id="progress-section">
+        <div class="progress-overall" id="progress-overall-text"></div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar-fill" id="progress-bar"></div>
+        </div>
+        <div class="progress-status" id="progress-status-text"></div>
+      </div>
+
+      <button id="btn-convert" class="btn-convert state-idle" disabled>Convert to PPTX</button>
+
+    </section>
+
+    <!-- Right sidebar: preview + AR badge + fill mode + output folder + file details -->
+    <section class="right-sidebar">
+
+      <div class="preview-area">
+        <canvas id="preview-canvas" width="320" height="180"></canvas>
+        <div class="preview-controls">
+          <button id="btn-live-preview" class="btn-live-preview" style="display:none">
+            See first slide
+          </button>
+        </div>
+      </div>
+
+      <div id="ar-badge"></div>
+
+      <div id="fill-mode-selector"></div>
+
+      <div id="output-folder-row"></div>
+
+      <div id="file-details"></div>
+
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="app-footer">
+    <span class="footer-copy">&#169; 2026 Visual Entropy Productions</span>
+    <a href="https://www.veproductions.net" target="_blank" class="footer-link">veproductions.net</a>
+  </footer>
+
+  <!-- Settings Modal -->
+  <div id="settings-overlay" class="settings-overlay hidden">
+
+    <div class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
+
+      <div class="settings-header">
+        <div class="settings-tabs">
+          <button class="settings-tab active" data-tab="appearance">Appearance</button>
+          <button class="settings-tab" data-tab="output">Output</button>
+          <button class="settings-tab" data-tab="diagnostics">Diagnostics</button>
+        </div>
+        <button class="settings-close" id="btn-settings-close">&#10005;</button>
+      </div>
+
+      <div class="settings-body">
+
+        <!-- Appearance tab -->
+        <div class="settings-pane active" id="tab-appearance">
+          <div class="settings-section-label">Skin</div>
+          <div class="skin-options">
+            <button class="skin-option" data-skin="professional">
+              <div class="skin-swatch skin-swatch-pro"></div>
+              <div class="skin-name">SlideFluid Pro</div>
+            </button>
+            <button class="skin-option" data-skin="fun">
+              <div class="skin-swatch skin-swatch-fun"></div>
+              <div class="skin-name">SlideFluid Classic</div>
+            </button>
+          </div>
+
+        </div>
+
+        <!-- Output tab -->
+        <div class="settings-pane" id="tab-output">
+
+          <div class="settings-row">
+            <div class="settings-row-label">Default output folder</div>
+            <div class="settings-row-control" id="settings-output-dir"></div>
+          </div>
+
+          <div class="settings-row">
+            <div class="settings-row-label">Slide image quality</div>
+            <div class="settings-row-control">
+              <label class="radio-label"><input type="radio" name="dpi" value="144"> 144 dpi — default, sharp on any screen</label>
+              <label class="radio-label"><input type="radio" name="dpi" value="72"> 72 dpi — smaller files, may look soft on text-heavy slides</label>
+            </div>
+            <div class="settings-warning" id="dpi-warning">72 dpi can look pixelated on text-heavy slides. Recommended only if file size is a concern. (~4× smaller than 144 dpi)</div>
+          </div>
+
+          <div class="settings-row">
+            <div class="settings-row-label">Default fill mode</div>
+            <div class="settings-row-control">
+              <label class="radio-label"><input type="radio" name="default-fill" value="black"> Black bars</label>
+              <label class="radio-label"><input type="radio" name="default-fill" value="color_match"> Color Match</label>
+              <label class="radio-label"><input type="radio" name="default-fill" value="smear"> Smear Fill</label>
+            </div>
+          </div>
+
+          <div class="settings-row settings-row-inline">
+            <div class="settings-row-label">Auto-open folder on complete</div>
+            <label class="toggle-label">
+              <input type="checkbox" id="setting-auto-open">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+
+          <div class="settings-row settings-row-inline">
+            <div class="settings-row-label">Overwrite existing files</div>
+            <select id="setting-overwrite" class="settings-select">
+              <option value="ask">Ask each time</option>
+              <option value="overwrite">Always overwrite</option>
+              <option value="skip">Always skip</option>
+              <option value="rename">Always rename</option>
+            </select>
+          </div>
+
+          <div class="settings-row settings-row-inline">
+            <div class="settings-row-label">Filename suffix</div>
+            <input type="text" id="setting-suffix" class="settings-input" placeholder="e.g. _slides" maxlength="64">
+          </div>
+
+          <div class="settings-row settings-row-inline">
+            <div class="settings-row-label">Write conversion report</div>
+            <label class="toggle-label">
+              <input type="checkbox" id="setting-write-report">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="settings-hint">Saves a .txt summary alongside each batch — file names, slide counts, and any warnings.</div>
+
+        </div>
+
+        <!-- Diagnostics tab -->
+        <div class="settings-pane" id="tab-diagnostics">
+          <div class="diag-actions">
+            <button class="btn-diag-primary" id="btn-run-preflight">Run Preflight Check</button>
+            <button class="btn-diag-secondary" id="btn-copy-preflight" style="display:none">Copy to Clipboard</button>
+          </div>
+          <div id="preflight-results"></div>
+
+          <div class="diag-log-section">
+            <div class="settings-section-label">Software updates</div>
+            <div class="diag-actions">
+              <button class="btn-diag-secondary" id="btn-check-update">Check for Updates</button>
+              <button class="btn-diag-secondary" id="btn-download-update" style="display:none">Download Update</button>
+              <button class="btn-diag-primary"   id="btn-install-update"  style="display:none">Install &amp; Restart</button>
+            </div>
+            <div id="update-status-line" class="update-status-line"></div>
+          </div>
+
+          <div class="diag-log-section">
+            <div class="settings-section-label">Application log</div>
+            <div class="diag-actions">
+              <button class="btn-diag-secondary" id="btn-open-log-file">Open Log File</button>
+              <button class="btn-diag-secondary" id="btn-refresh-log">Refresh</button>
+            </div>
+            <pre id="log-tail" class="log-tail-area"></pre>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="settings-footer">
+        <button id="btn-settings-done">Done</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
