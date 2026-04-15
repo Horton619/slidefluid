@@ -91,7 +91,12 @@
       "Bash(git --version)",
       "Bash(git config:*)",
       "Bash(git init:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m 'SlideFluid 3.0 — initial release:*)",
+      "Bash(gh repo:*)",
+      "Bash(export GH_TOKEN=$\\(gh auth token\\))",
+      "Bash(gh release:*)",
+      "Bash(git rm:*)"
     ]
   }
 }

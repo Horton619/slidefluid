@@ -161,14 +161,20 @@ function resolveBackendScript() {
  * In packaged:  <resources>/poppler/
  */
 function resolvePopplerPath() {
+  // Windows Poppler binaries live in a bin/ subdirectory
+  const winBinSuffix = process.platform === 'win32' ? 'bin' : null;
+
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'poppler');
+    const base = path.join(process.resourcesPath, 'poppler');
+    return winBinSuffix ? path.join(base, winBinSuffix) : base;
   }
   // Dev: check vendor dir, fall back to system Poppler (null = use PATH)
   const platform = process.platform === 'win32' ? 'win' :
                    process.platform === 'darwin' ? 'mac' : 'linux';
   const vendorPath = path.join(__dirname, '..', 'vendor', 'poppler', platform);
-  if (fs.existsSync(vendorPath)) return vendorPath;
+  if (fs.existsSync(vendorPath)) {
+    return winBinSuffix ? path.join(vendorPath, winBinSuffix) : vendorPath;
+  }
   return null; // use system Poppler from PATH
 }
 

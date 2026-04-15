@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # macOS — arm64 + x64 DMG
+  # ---------------------------------------------------------------------------
+  release-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller python-pptx pdf2image pillow numpy python-docx
+
+      - name: Build PyInstaller binary (Mac)
+        run: |
+          cd backend
+          pyinstaller --clean slidefluid_convert.spec
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build & publish Mac DMGs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run release:mac
+
+  # ---------------------------------------------------------------------------
+  # Windows — x64 NSIS installer
+  # ---------------------------------------------------------------------------
+  release-win:
+    runs-on: windows-latest
+    # Run after mac so the release already exists when we upload to it
+    needs: release-mac
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller python-pptx pdf2image pillow numpy python-docx
+
+      - name: Build PyInstaller binary (Windows)
+        run: |
+          cd backend
+          pyinstaller --clean slidefluid_convert.spec
+
+      - name: Download Poppler for Windows
+        shell: pwsh
+        run: |
+          $url = "https://github.com/oschwartz10612/poppler-windows/releases/download/v24.08.0-0/Release-24.08.0-0.zip"
+          $zip = "$env:TEMP\poppler.zip"
+          $out = "$env:TEMP\poppler"
+          Invoke-WebRequest $url -OutFile $zip
+          Expand-Archive $zip -DestinationPath $out
+          $binDir = Get-ChildItem "$out" -Recurse -Filter "pdfinfo.exe" | Select-Object -First 1 -ExpandProperty DirectoryName
+          New-Item -ItemType Directory -Force -Path "vendor\poppler\win\bin"
+          Copy-Item "$binDir\pdfinfo.exe"  "vendor\poppler\win\bin\"
+          Copy-Item "$binDir\pdftoppm.exe" "vendor\poppler\win\bin\"
+          # Copy required DLLs
+          $dllDir = Split-Path $binDir -Parent | Join-Path -ChildPath "bin"
+          if (Test-Path $dllDir) {
+            Copy-Item "$dllDir\*.dll" "vendor\poppler\win\bin\" -ErrorAction SilentlyContinue
+          }
+          Copy-Item "$binDir\*.dll" "vendor\poppler\win\bin\" -ErrorAction SilentlyContinue
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build & publish Windows installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run release:win

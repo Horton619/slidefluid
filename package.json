@@ -8,7 +8,8 @@
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:all": "electron-builder --mac --win",
-    "release": "electron-builder --mac --publish always"
+    "release:mac": "electron-builder --mac --publish always",
+    "release:win": "electron-builder --win --publish always"
   },
   "build": {
     "appId": "com.visualentropy.slidefluid",
@@ -17,7 +18,6 @@
     "files": [
       "src/**/*",
       "assets/**/*",
-      "backend/dist/**/*",
       "vendor/poppler/**/*"
     ],
     "mac": {
@@ -31,7 +31,13 @@
         }
       ],
       "icon": "assets/icons/icon.icns",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "extraResources": [
+        {
+          "from": "backend/dist/slidefluid_convert",
+          "to": "backend/slidefluid_convert"
+        }
+      ]
     },
     "win": {
       "target": [
@@ -42,7 +48,13 @@
           ]
         }
       ],
-      "icon": "assets/icons/icon.ico"
+      "icon": "assets/icons/icon.ico",
+      "extraResources": [
+        {
+          "from": "backend/dist/slidefluid_convert.exe",
+          "to": "backend/slidefluid_convert.exe"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -60,10 +72,6 @@
         "filter": [
           "**/*"
         ]
-      },
-      {
-        "from": "backend/dist/slidefluid_convert",
-        "to": "backend/slidefluid_convert"
       }
     ]
   },
