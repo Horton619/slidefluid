@@ -51,7 +51,7 @@ jobs:
       - name: Ad-hoc code sign (fixes macOS "damaged" Gatekeeper error)
         run: |
           codesign --deep --force --sign - "dist/mac-arm64/SlideFluid.app"
-          codesign --deep --force --sign - "dist/mac/SlideFluid.app"
+          codesign --deep --force --sign - "dist/mac-x64/SlideFluid.app"
 
       - name: Package & publish Mac DMGs
         env:
@@ -59,7 +59,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           npx electron-builder --mac dmg --arm64 --prepackaged dist/mac-arm64 --publish always
-          npx electron-builder --mac dmg --x64 --prepackaged dist/mac --publish always
+          npx electron-builder --mac dmg --x64 --prepackaged dist/mac-x64 --publish always
 
   # ---------------------------------------------------------------------------
   # Windows — x64 NSIS installer
