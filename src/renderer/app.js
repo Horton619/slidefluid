@@ -515,25 +515,51 @@ function renderSlideThemeSelector(item) {
     { value: 'light', label: 'Light' },
     { value: 'dark',  label: 'Dark'  },
   ];
-  const current = item.slideTheme || 'light';
+  const aligns = [
+    { value: 'left',   label: 'Left'   },
+    { value: 'center', label: 'Center' },
+  ];
+  const currentTheme = item.slideTheme || 'light';
+  const currentAlign = item.textAlign  || 'left';
 
   el.innerHTML = `
     <div class="fill-mode-label">Slide theme</div>
     <div class="fill-mode-buttons">
       ${themes.map(t => `
-        <button class="fill-btn${current === t.value ? ' active' : ''}"
+        <button class="fill-btn${currentTheme === t.value ? ' active' : ''}"
                 data-theme="${t.value}">${escHtml(t.label)}</button>
+      `).join('')}
+    </div>
+    <div class="fill-mode-label" style="margin-top:8px">Alignment</div>
+    <div class="fill-mode-buttons">
+      ${aligns.map(a => `
+        <button class="fill-btn align-btn${currentAlign === a.value ? ' active' : ''}"
+                data-align="${a.value}">${escHtml(a.label)}</button>
       `).join('')}
     </div>
   `;
 
-  el.querySelectorAll('.fill-btn').forEach(btn => {
+  el.querySelectorAll('.fill-btn[data-theme]').forEach(btn => {
     btn.addEventListener('click', () => {
       item.slideTheme = btn.dataset.theme;
-      el.querySelectorAll('.fill-btn').forEach(b =>
+      el.querySelectorAll('.fill-btn[data-theme]').forEach(b =>
         b.classList.toggle('active', b.dataset.theme === item.slideTheme)
       );
       drawPreview(item);
+      if (item.status === 'done' || item.status === 'error') {
+        item.status = 'waiting';
+        refreshQueueItem(item);
+        updateConvertButton();
+      }
+    });
+  });
+
+  el.querySelectorAll('.fill-btn[data-align]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      item.textAlign = btn.dataset.align;
+      el.querySelectorAll('.fill-btn[data-align]').forEach(b =>
+        b.classList.toggle('active', b.dataset.align === item.textAlign)
+      );
       if (item.status === 'done' || item.status === 'error') {
         item.status = 'waiting';
         refreshQueueItem(item);
@@ -1136,24 +1162,27 @@ async function beginConversion() {
     })),
   };
 
-  // Group PDF items by fillMode; DOCX/TXT items grouped by slideTheme at the end.
+  // Group PDF items by fillMode; DOCX/TXT items by slideTheme+textAlign.
   const groups = [];
   const seenFm = new Map();
-  const seenTheme = new Map();
+  const seenDocx = new Map();
 
   for (const item of toConvert) {
     if (item.fileType === 'docx') {
       const theme = item.slideTheme || 'light';
-      if (!seenTheme.has(theme)) { seenTheme.set(theme, []); }
-      seenTheme.get(theme).push(item);
+      const align = item.textAlign  || 'left';
+      const key   = `${theme}|${align}`;
+      if (!seenDocx.has(key)) { seenDocx.set(key, []); }
+      seenDocx.get(key).push(item);
     } else {
       const fm = item.fillMode || 'black';
       if (!seenFm.has(fm)) { seenFm.set(fm, []); groups.push({ fillMode: fm, items: seenFm.get(fm) }); }
       seenFm.get(fm).push(item);
     }
   }
-  for (const [theme, items] of seenTheme) {
-    groups.push({ fillMode: 'black', slideTheme: theme, items }); // fillMode ignored by Python for DOCX
+  for (const [key, items] of seenDocx) {
+    const [slideTheme, textAlign] = key.split('|');
+    groups.push({ fillMode: 'black', slideTheme, textAlign, items });
   }
 
   for (const group of groups) {
@@ -1174,6 +1203,7 @@ async function beginConversion() {
       dpi: state.settings.dpi || 144,
       fillMode: group.fillMode,
       slideTheme: group.slideTheme || 'light',
+      textAlign: group.textAlign || 'left',
       suffix,
     });
 

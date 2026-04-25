@@ -183,7 +183,7 @@ function resolvePopplerPath() {
 // ---------------------------------------------------------------------------
 
 class ConversionJob {
-  constructor({ files, outputDir, dpi, fillMode, suffix, overwrite, win, slideTheme }) {
+  constructor({ files, outputDir, dpi, fillMode, suffix, overwrite, win, slideTheme, textAlign }) {
     this.files = files;
     this.outputDir = outputDir;
     this.dpi = dpi;
@@ -192,6 +192,7 @@ class ConversionJob {
     this.overwrite = overwrite;
     this.win = win;
     this.slideTheme = slideTheme || 'light';
+    this.textAlign = textAlign || 'left';
     this.proc = null;
     this.cancelled = false;
   }
@@ -205,6 +206,7 @@ class ConversionJob {
       '--dpi', String(this.dpi),
       '--fill', this.fillMode,
       '--slide-theme', this.slideTheme,
+      '--text-align', this.textAlign,
       '--output-dir', this.outputDir,
       '--overwrite',   // Electron handles overwrite UX; always pass --overwrite here
     ];
@@ -564,6 +566,7 @@ ipcMain.handle('conversion:start', async (event, payload) => {
     fillMode,
     suffix,
     slideTheme,
+    textAlign,
   } = payload;
 
   // Validate output dir writable before spawning
@@ -581,6 +584,7 @@ ipcMain.handle('conversion:start', async (event, payload) => {
     overwrite: true, // Electron renderer handles overwrite UX via overwrite:check
     win: mainWindow,
     slideTheme: slideTheme || 'light',
+    textAlign: textAlign || 'left',
   });
 
   currentJob.start();

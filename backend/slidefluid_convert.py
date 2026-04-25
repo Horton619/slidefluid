@@ -366,6 +366,7 @@ def run_batch(
     suffix: str = "",
     poppler_path: str | None = None,
     slide_theme: str = "light",
+    text_align: str = "left",
 ) -> int:
     """Run conversion on a list of PDF paths. Returns exit code (0 = all ok)."""
     converted = 0
@@ -384,6 +385,7 @@ def run_batch(
                 file_index=i,
                 total_files=total,
                 slide_theme=slide_theme,
+                text_align=text_align,
             )
         else:
             result = convert_pdf(
@@ -459,10 +461,10 @@ collect_pdfs = collect_files
 _TXT_MARGIN_IN  = 0.55
 _TXT_W_PT       = (SLIDE_WIDTH_IN  - _TXT_MARGIN_IN * 2) * 72   # ≈ 851 pt
 _TXT_H_PT       = (SLIDE_HEIGHT_IN - _TXT_MARGIN_IN * 2) * 72   # ≈ 461 pt
-_CHAR_W_RATIO   = 0.52   # avg char width as fraction of point size (system-ui)
-_LINE_H_RATIO   = 1.35   # line height as multiple of font size
-_MIN_FONT_PT    = 12
-_MAX_FONT_PT    = 120
+_CHAR_W_RATIO   = 0.44   # avg char width as fraction of point size (calibri/system-ui)
+_LINE_H_RATIO   = 1.20   # line height as multiple of font size
+_MIN_FONT_PT    = 20
+_MAX_FONT_PT    = 54
 
 
 # --- Parsers ---
@@ -523,6 +525,13 @@ def _parse_docx(path: Path) -> tuple[list[list[dict]], list[str]]:
         style_name = (para.style.name or "").lower() if para.style else ""
         is_heading = "heading" in style_name
         is_bullet  = "list" in style_name or "bullet" in style_name
+
+        # Fallback: check OOXML numPr element — bullets from Google Docs,
+        # Keynote, and other exporters often carry no named list style but
+        # always have a <w:numPr> block in the paragraph XML.
+        if not is_bullet:
+            _WML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            is_bullet = para._p.find(f".//{{{_WML_NS}}}numPr") is not None
 
         # Blank paragraph — count them; two or more in a row = slide boundary
         if not para.text.strip():
@@ -621,7 +630,7 @@ def _estimate_fits(paragraphs: list[dict], font_size: float) -> bool:
 
     total = 0.0
     for i, para in enumerate(paragraphs):
-        text = para.get("text", "")
+        text = ("• " if para.get("is_bullet") else "") + para.get("text", "")
         if not text.strip():
             total += 0.5
             continue
@@ -654,6 +663,7 @@ def _add_text_slide(
     paragraphs: list[dict],
     base_size: int,
     dark_mode: bool = False,
+    text_align: str = "center",
 ) -> None:
     """Add one text slide to the presentation."""
     layout = prs.slide_layouts[6]   # blank
@@ -674,9 +684,11 @@ def _add_text_slide(
     tf = txBox.text_frame
     tf.word_wrap = True
 
+    align = PP_ALIGN.LEFT if text_align == "left" else PP_ALIGN.CENTER
+
     for i, para_data in enumerate(paragraphs):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.alignment = PP_ALIGN.CENTER
+        p.alignment = align
 
         is_heading = para_data.get("is_heading", False)
         is_bullet  = para_data.get("is_bullet",  False)
@@ -742,6 +754,7 @@ def convert_text_doc(
     file_index: int = 1,
     total_files: int = 1,
     slide_theme: str = "light",
+    text_align: str = "left",
 ) -> dict:
     """Convert a .txt or .docx file to a PPTX using blank-line slide boundaries."""
     ext  = file_path.suffix.lower()
@@ -801,7 +814,7 @@ def convert_text_doc(
             })
 
         try:
-            _add_text_slide(prs, paragraphs, font_size, dark_mode=(slide_theme == "dark"))
+            _add_text_slide(prs, paragraphs, font_size, dark_mode=(slide_theme == "dark"), text_align=text_align)
         except Exception as e:
             msg = f"Failed building slide {i}: {e}"
             _emit({"type": "error", "file": str(file_path), "message": msg})
@@ -899,6 +912,8 @@ def main():
                         help="Raster DPI (default: 72)")
     parser.add_argument("--fill", choices=["black", "color_match", "smear"],
                         default="black", help="Pillarbox fill mode (default: black)")
+    parser.add_argument("--text-align", choices=["left", "center"], default="left",
+                        help="Text alignment for DOCX/TXT slides")
     parser.add_argument("--slide-theme", choices=["light", "dark"],
                         default="light", help="Slide background theme for text docs (default: light)")
     parser.add_argument("--overwrite", action="store_true",
@@ -957,6 +972,7 @@ def main():
             suffix=args.suffix,
             poppler_path=args.poppler_path,
             slide_theme=args.slide_theme,
+            text_align=args.text_align,
         )
     )
 
