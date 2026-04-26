@@ -21,6 +21,9 @@ let _batchResolve = null;
 let _convTotalFiles = 0;
 // Conversion report — populated during a run, written on completion
 let _convReport = null;
+// Overflow resolution queue
+let _pendingOverflowQueue = []; // items waiting for overflow resolution
+let _breakPickerState = null;   // {item, slideIndex, lines, heading, resolve}
 
 // Fun skin — rotating strings (cycle on each drop / each progress tick)
 const FUN_DROP_LABELS = [
@@ -153,8 +156,13 @@ async function init() {
   setupPreviewButton();
   setupKeyboardShortcuts();
 
+  // "Clear all done" link — hidden until at least one item is done
+  const clearBtn = document.getElementById('btn-clear-done');
+  if (clearBtn) clearBtn.addEventListener('click', clearAllDone);
+
   renderOutputFolder();
   updateConvertButton();
+  updateClearDoneButton();
   updateSidebar();
   updateSkinText();
 }
@@ -323,6 +331,17 @@ async function addFiles(rawPaths) {
         item.slideCount = info.slideCount;
         item.wordCount  = info.wordCount;
       }
+
+      // Overflow analysis
+      const analysis = await window.slidefluid.analyzeDoc(item.path);
+      if (analysis.ok && analysis.overflowSlides && analysis.overflowSlides.length > 0) {
+        item.overflowSlides  = analysis.overflowSlides;
+        item.splitChoices    = [];  // will be populated by overflow modal
+        _pendingOverflowQueue.push(item);
+      } else {
+        item.splitChoices = [];
+      }
+
       item.status = 'waiting';
       refreshQueueItem(item);
       if (state.selectedId === item.id) updateSidebar();
@@ -330,6 +349,9 @@ async function addFiles(rawPaths) {
   ]);
 
   updateConvertButton();
+
+  // Show overflow modal for any files that need resolution
+  _drainOverflowQueue();
 
   if (isFirstDrop && !state.outputDir) {
     const chosen = await window.slidefluid.openFolderPicker();
@@ -339,6 +361,193 @@ async function addFiles(rawPaths) {
       updateConvertButton();
     }
   }
+}
+
+// --- Overflow resolution ---
+
+function _drainOverflowQueue() {
+  if (_pendingOverflowQueue.length === 0) return;
+  const items = _pendingOverflowQueue.splice(0);
+  _showOverflowModal(items);
+}
+
+function _showOverflowModal(items) {
+  const overlay  = document.getElementById('overflow-overlay');
+  const listEl   = document.getElementById('overflow-slides-list');
+  const applyBtn = document.getElementById('btn-overflow-apply');
+  const closeBtn = document.getElementById('btn-overflow-close');
+
+  // Build one row per overflow slide across all items
+  listEl.innerHTML = '';
+  const allRows = []; // {item, slide}
+
+  for (const item of items) {
+    for (const slide of (item.overflowSlides || [])) {
+      allRows.push({ item, slide });
+      const row = _buildOverflowRow(item, slide);
+      listEl.appendChild(row);
+    }
+  }
+
+  overlay.classList.remove('hidden');
+
+  const close = () => {
+    overlay.classList.add('hidden');
+    // Defaults: anything without a choice gets midpoint
+    for (const item of items) {
+      for (const slide of (item.overflowSlides || [])) {
+        const existing = (item.splitChoices || []).find(c => c.slide_index === slide.slide_index);
+        if (!existing) {
+          item.splitChoices = item.splitChoices || [];
+          item.splitChoices.push({ slide_index: slide.slide_index, mode: 'midpoint' });
+        }
+      }
+    }
+    updateConvertButton();
+  };
+
+  closeBtn.onclick = close;
+  applyBtn.onclick = close;
+}
+
+function _buildOverflowRow(item, slide) {
+  const heading  = slide.heading || `Slide ${slide.slide_index + 1}`;
+  const preview  = (slide.lines || []).slice(1, 3).join(' · ');
+  const row      = document.createElement('div');
+  row.className  = 'overflow-slide-row';
+  row.dataset.slideIndex = slide.slide_index;
+
+  row.innerHTML = `
+    <div class="overflow-slide-heading">${escHtml(heading)} <span style="color:#667788;font-weight:400;font-size:10px">— ${escHtml(item.name)}</span></div>
+    <div class="overflow-slide-preview">${escHtml(preview)}</div>
+    <div class="overflow-slide-options">
+      <button class="overflow-opt-btn active" data-mode="midpoint">Split at midpoint</button>
+      <button class="overflow-opt-btn" data-mode="spill">Auto-split</button>
+      <button class="overflow-opt-btn" data-mode="manual">Pick break point…</button>
+    </div>
+  `;
+
+  // Default choice
+  item.splitChoices = item.splitChoices || [];
+  const choice = { slide_index: slide.slide_index, mode: 'midpoint' };
+  item.splitChoices.push(choice);
+
+  row.querySelectorAll('.overflow-opt-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const mode = btn.dataset.mode;
+      if (mode === 'manual') {
+        const breakLine = await _showBreakPicker(slide);
+        if (breakLine === null) return; // cancelled
+        choice.mode = 'manual';
+        choice.break_line = breakLine;
+      } else {
+        choice.mode = mode;
+        delete choice.break_line;
+      }
+      row.querySelectorAll('.overflow-opt-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.mode === mode)
+      );
+    });
+  });
+
+  return row;
+}
+
+function _showBreakPicker(slide) {
+  return new Promise((resolve) => {
+    const overlay   = document.getElementById('break-picker-overlay');
+    const titleEl   = document.getElementById('break-picker-title');
+    const linesEl   = document.getElementById('break-picker-lines');
+    const slideBLabel = document.getElementById('break-picker-slide-b-label');
+    const cancelBtn = document.getElementById('btn-break-picker-cancel');
+    const confirmBtn = document.getElementById('btn-break-picker-confirm');
+    const closeBtn  = document.getElementById('btn-break-picker-close');
+
+    const heading = slide.heading || `Slide ${slide.slide_index + 1}`;
+    const lines   = slide.lines || [];
+    titleEl.textContent = `Pick split point — ${heading}`;
+
+    const contLabel = slide.heading ? `${slide.heading} cont.` : 'Slide B';
+
+    // Suggest a split: scan from midpoint outward for a sentence-ending line
+    function suggestSplit() {
+      const SENTENCE_ENDS = ['.', '!', '?', '…'];
+      const mid = Math.floor(lines.length / 2);
+      for (let delta = 0; delta < lines.length; delta++) {
+        for (const k of [mid - delta, mid + delta]) {
+          if (k > 0 && k < lines.length) {
+            const prev = (lines[k - 1] || '').trimEnd();
+            if (prev && SENTENCE_ENDS.includes(prev[prev.length - 1])) {
+              return k;
+            }
+          }
+        }
+      }
+      return mid;
+    }
+
+    let splitAt = suggestSplit();
+
+    function render() {
+      linesEl.innerHTML = '';
+
+      // "Let SlideFluid suggest" button at the top
+      const suggestBtn = document.createElement('button');
+      suggestBtn.className = 'break-picker-suggest';
+      suggestBtn.textContent = '✨ Let SlideFluid suggest';
+      suggestBtn.onclick = () => { splitAt = suggestSplit(); render(); };
+      linesEl.appendChild(suggestBtn);
+
+      lines.forEach((line, i) => {
+        if (i === splitAt) {
+          // Divider
+          const div = document.createElement('div');
+          div.className = 'break-picker-divider';
+          div.innerHTML = `
+            <button class="break-picker-divider-btn" id="bp-up" ${splitAt <= 1 ? 'disabled' : ''}>↑</button>
+            <div class="break-picker-divider-line"></div>
+            <span class="break-picker-divider-label">SPLIT HERE</span>
+            <div class="break-picker-divider-line"></div>
+            <button class="break-picker-divider-btn" id="bp-down" ${splitAt >= lines.length - 1 ? 'disabled' : ''}>↓</button>
+          `;
+          div.querySelector('#bp-up').onclick = () => { splitAt = Math.max(1, splitAt - 1); render(); };
+          div.querySelector('#bp-down').onclick = () => { splitAt = Math.min(lines.length - 1, splitAt + 1); render(); };
+          linesEl.appendChild(div);
+          slideBLabel.textContent = contLabel;
+        }
+        const lineEl = document.createElement('div');
+        lineEl.className = 'break-picker-line' + (i >= splitAt ? ' slide-b' : '');
+        lineEl.textContent = line;
+        // Click between lines to move split
+        lineEl.addEventListener('click', () => {
+          splitAt = i >= splitAt ? Math.min(i + 1, lines.length - 1) : i;
+          splitAt = Math.max(1, splitAt);
+          render();
+        });
+        linesEl.appendChild(lineEl);
+      });
+      // If splitAt is at end, clamp and re-render
+      if (splitAt >= lines.length) {
+        splitAt = lines.length - 1;
+        render();
+      }
+    }
+
+    render();
+    overlay.classList.remove('hidden');
+
+    const close = (result) => {
+      overlay.classList.add('hidden');
+      cancelBtn.onclick = null;
+      confirmBtn.onclick = null;
+      closeBtn.onclick = null;
+      resolve(result);
+    };
+
+    cancelBtn.onclick = () => close(null);
+    closeBtn.onclick  = () => close(null);
+    confirmBtn.onclick = () => close(splitAt);
+  });
 }
 
 // .doc notice — old binary Word format is not supported; prompt to re-save
@@ -446,10 +655,50 @@ function buildQueueItemEl(item) {
       ${progressBar}
     </div>
     <div class="qi-badge status-${item.status}">${escHtml(statusLabel)}</div>
+    <button class="qi-remove" title="Remove from queue" aria-label="Remove">✕</button>
   `;
 
   el.addEventListener('click', () => selectItem(item.id));
+  el.querySelector('.qi-remove').addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeQueueItem(item.id);
+  });
   return el;
+}
+
+function removeQueueItem(id) {
+  const idx = state.queue.findIndex(i => i.id === id);
+  if (idx === -1) return;
+  // Don't yank an item mid-conversion — silently no-op
+  if (state.queue[idx].status === 'converting') return;
+  state.queue.splice(idx, 1);
+  if (state.selectedId === id) {
+    state.selectedId = state.queue.length > 0 ? state.queue[0].id : null;
+  }
+  renderQueue();
+  updateClearDoneButton();
+  updateConvertButton();
+  updateSidebar();
+}
+
+function clearAllDone() {
+  const doneIds = new Set(state.queue.filter(i => i.status === 'done').map(i => i.id));
+  if (doneIds.size === 0) return;
+  state.queue = state.queue.filter(i => !doneIds.has(i.id));
+  if (state.selectedId && doneIds.has(state.selectedId)) {
+    state.selectedId = state.queue.length > 0 ? state.queue[0].id : null;
+  }
+  renderQueue();
+  updateClearDoneButton();
+  updateConvertButton();
+  updateSidebar();
+}
+
+function updateClearDoneButton() {
+  const btn = document.getElementById('btn-clear-done');
+  if (!btn) return;
+  const hasDone = state.queue.some(i => i.status === 'done');
+  btn.classList.toggle('hidden', !hasDone);
 }
 
 function selectItem(id) {
@@ -1025,6 +1274,7 @@ function setupConvertButton() {
 }
 
 function updateConvertButton() {
+  updateClearDoneButton();
   const btn = document.getElementById('btn-convert');
   const waitingItems = state.queue.filter(i => i.status === 'waiting');
   const allSettled   = state.queue.length > 0 &&
@@ -1197,6 +1447,9 @@ async function beginConversion() {
       window.slidefluid.onConversionSpawnError(handleConversionSpawnError),
     ];
 
+    // Collect split choices for all items in this group
+    const groupSplitChoices = group.items.flatMap(i => i.splitChoices || []);
+
     const result = await window.slidefluid.startConversion({
       files: group.items.map(i => i.path),
       outputDir: state.outputDir,
@@ -1204,6 +1457,7 @@ async function beginConversion() {
       fillMode: group.fillMode,
       slideTheme: group.slideTheme || 'light',
       textAlign: group.textAlign || 'left',
+      splitChoices: groupSplitChoices,
       suffix,
     });
 

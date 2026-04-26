@@ -183,7 +183,7 @@ function resolvePopplerPath() {
 // ---------------------------------------------------------------------------
 
 class ConversionJob {
-  constructor({ files, outputDir, dpi, fillMode, suffix, overwrite, win, slideTheme, textAlign }) {
+  constructor({ files, outputDir, dpi, fillMode, suffix, overwrite, win, slideTheme, textAlign, splitChoices }) {
     this.files = files;
     this.outputDir = outputDir;
     this.dpi = dpi;
@@ -193,6 +193,7 @@ class ConversionJob {
     this.win = win;
     this.slideTheme = slideTheme || 'light';
     this.textAlign = textAlign || 'left';
+    this.splitChoices = splitChoices || [];
     this.proc = null;
     this.cancelled = false;
   }
@@ -211,6 +212,9 @@ class ConversionJob {
       '--overwrite',   // Electron handles overwrite UX; always pass --overwrite here
     ];
 
+    if (this.splitChoices.length > 0) {
+      scriptArgs.push('--split-choices', JSON.stringify(this.splitChoices));
+    }
     if (this.suffix) scriptArgs.push('--suffix', this.suffix);
     if (popplerPath) scriptArgs.push('--poppler-path', popplerPath);
     scriptArgs.push(...this.files);
@@ -567,6 +571,7 @@ ipcMain.handle('conversion:start', async (event, payload) => {
     suffix,
     slideTheme,
     textAlign,
+    splitChoices,
   } = payload;
 
   // Validate output dir writable before spawning
@@ -585,6 +590,7 @@ ipcMain.handle('conversion:start', async (event, payload) => {
     win: mainWindow,
     slideTheme: slideTheme || 'light',
     textAlign: textAlign || 'left',
+    splitChoices: splitChoices || [],
   });
 
   currentJob.start();
@@ -764,6 +770,36 @@ ipcMain.handle('docx:info', async (event, filePath) => {
       resolve({ ok: false, error: 'No docx_info response from backend' });
     });
     proc.on('error', (err) => resolve({ ok: false, error: err.message }));
+  });
+});
+
+ipcMain.handle('docx:analyze', async (event, filePath) => {
+  const backendExe = resolvePythonBackend();
+  const venvPython = path.join(__dirname, '..', 'venv', 'bin', 'python3');
+  const devPython  = fs.existsSync(venvPython) ? venvPython : 'python3';
+  const cmd  = backendExe || devPython;
+  const args = backendExe
+    ? ['--analyze', filePath]
+    : [resolveBackendScript(), '--analyze', filePath];
+
+  return new Promise((resolve) => {
+    let output = '';
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env } });
+    proc.stdout.on('data', (d) => (output += d.toString()));
+    proc.stderr.on('data', (d) => log('warn', `docx:analyze stderr: ${d.toString().trim()}`));
+    proc.on('close', () => {
+      for (const line of output.split('\n')) {
+        try {
+          const msg = JSON.parse(line.trim());
+          if (msg.type === 'docx_analyze') {
+            resolve({ ok: msg.ok, totalSlides: msg.total_slides, overflowSlides: msg.overflow_slides || [] });
+            return;
+          }
+        } catch (_) {}
+      }
+      resolve({ ok: false, overflowSlides: [] });
+    });
+    proc.on('error', (err) => resolve({ ok: false, error: err.message, overflowSlides: [] }));
   });
 });
 

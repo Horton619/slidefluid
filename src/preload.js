@@ -154,6 +154,12 @@ contextBridge.exposeInMainWorld('slidefluid', {
   getDocxInfo: (filePath) => ipcRenderer.invoke('docx:info', filePath),
 
   /**
+   * Analyze a .txt or .docx file for overflow slides.
+   * Returns {ok, totalSlides, overflowSlides: [{slide_index, heading, lines}]}
+   */
+  analyzeDoc:   (filePath) => ipcRenderer.invoke('docx:analyze', filePath),
+
+  /**
    * Render a single PDF page as a PNG data URL (uses pdftoppm).
    * @param {string} filePath
    * @param {number} page  1-based page number

@@ -43,7 +43,7 @@ from pdf2image.exceptions import (
 )
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
 from pptx.util import Emu, Inches, Pt
 
 # ---------------------------------------------------------------------------
@@ -367,6 +367,7 @@ def run_batch(
     poppler_path: str | None = None,
     slide_theme: str = "light",
     text_align: str = "left",
+    split_choices: list | None = None,
 ) -> int:
     """Run conversion on a list of PDF paths. Returns exit code (0 = all ok)."""
     converted = 0
@@ -386,6 +387,7 @@ def run_batch(
                 total_files=total,
                 slide_theme=slide_theme,
                 text_align=text_align,
+                split_choices=split_choices,
             )
         else:
             result = convert_pdf(
@@ -458,9 +460,10 @@ collect_pdfs = collect_files
 # ---------------------------------------------------------------------------
 
 # Text-fitting constants (in points, 1 pt = 1/72 inch)
-_TXT_MARGIN_IN  = 0.55
-_TXT_W_PT       = (SLIDE_WIDTH_IN  - _TXT_MARGIN_IN * 2) * 72   # ≈ 851 pt
-_TXT_H_PT       = (SLIDE_HEIGHT_IN - _TXT_MARGIN_IN * 2) * 72   # ≈ 461 pt
+_TXT_MARGIN_IN      = 0.55   # left / right margin
+_TXT_TOP_MARGIN_IN  = 0.15   # top margin (smaller = more vertical room)
+_TXT_W_PT       = (SLIDE_WIDTH_IN  - _TXT_MARGIN_IN     * 2) * 72   # ≈ 881 pt
+_TXT_H_PT       = (SLIDE_HEIGHT_IN - _TXT_TOP_MARGIN_IN * 2) * 72   # ≈ 518 pt
 _CHAR_W_RATIO   = 0.44   # avg char width as fraction of point size (calibri/system-ui)
 _LINE_H_RATIO   = 1.20   # line height as multiple of font size
 _MIN_FONT_PT    = 20
@@ -469,6 +472,93 @@ _MAX_FONT_PT    = 54
 
 # --- Parsers ---
 
+def _strip_rtf(text: str) -> str:
+    """Minimal RTF→plain text stripper. Handles TextEdit/macOS RTF saved with
+    a .txt or .rtf extension. Removes control words and groups; preserves
+    visible text. Not a full RTF parser — good enough for note-taking use."""
+    # Decode \uNNNN unicode escapes first (RTF stores Unicode as decimal)
+    def _u(m):
+        try:
+            return chr(int(m.group(1)) & 0xFFFF)
+        except Exception:
+            return ""
+    text = re.sub(r"\\u(-?\d+)\??", _u, text)
+    # Decode \'XX hex escapes (single byte in document codepage, usually CP1252)
+    def _h(m):
+        try:
+            return bytes([int(m.group(1), 16)]).decode('cp1252', errors='replace')
+        except Exception:
+            return ""
+    text = re.sub(r"\\'([0-9a-fA-F]{2})", _h, text)
+    # Drop known non-content groups (fonttbl, colortbl, etc.) by brace-depth tracking
+    NON_CONTENT_GROUPS = ('fonttbl', 'colortbl', 'expandedcolortbl', 'stylesheet',
+                          'pict', 'info', 'header', 'footer', 'listtable', 'listoverridetable',
+                          'rsidtbl', 'generator', 'cocoascreenfonts', 'cocoartf')
+    for group in NON_CONTENT_GROUPS:
+        pattern = re.compile(r'\{\\\*?\\?' + group + r'\b')
+        while True:
+            m = pattern.search(text)
+            if not m:
+                break
+            start = m.start()
+            depth = 0
+            end = start
+            for i in range(start, len(text)):
+                if text[i] == '{':
+                    depth += 1
+                elif text[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            else:
+                end = len(text)
+            text = text[:start] + text[end:]
+    # Drop \par/\line/\tab as actual whitespace
+    text = re.sub(r"\\par[d]?\b", "\n", text)
+    text = re.sub(r"\\line\b", "\n", text)
+    text = re.sub(r"\\tab\b", "\t", text)
+    # Drop \* (ignorable destination marker)
+    text = re.sub(r"\\\*", "", text)
+    # Strip remaining control words (\word, \word123) with optional trailing space
+    text = re.sub(r"\\[A-Za-z]+-?\d* ?", "", text)
+    # Strip leftover braces (the outer document wrapper, etc.)
+    text = text.replace("{", "").replace("}", "")
+    # Unescape backslash-escaped chars
+    text = re.sub(r"\\([\\'\"])", r"\1", text)
+    # Normalise non-breaking spaces and line separators
+    text = text.replace("\xa0", " ")
+    text = text.replace("\u2028", "\n").replace("\u2029", "\n")
+    # Promote inline bullet markers (•, ·, etc.) onto their own lines so each
+    # bullet becomes its own paragraph in the slide
+    text = re.sub(r"[ \t]+([•·▪►])[ \t]+", r"\n\1 ", text)
+    # Collapse 3+ consecutive blank lines to exactly 2 (the slide-break threshold)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text
+
+
+def _merge_orphan_headings(slides: list) -> list:
+    """If a slide is only a single heading paragraph, merge it into the next
+    slide. This catches source docs with extra blank lines between heading and
+    body content (common in hand-formatted notes)."""
+    if not slides:
+        return slides
+    result = []
+    i = 0
+    while i < len(slides):
+        cur = slides[i]
+        non_empty = [p for p in cur if p.get("text", "").strip()]
+        if (len(non_empty) == 1 and non_empty[0].get("is_heading")
+                and i + 1 < len(slides)):
+            # Prepend this heading to the next slide
+            result.append(cur + slides[i + 1])
+            i += 2
+        else:
+            result.append(cur)
+            i += 1
+    return result
+
+
 def _parse_txt(path: Path) -> tuple[list[list[dict]], list[str]]:
     """
     Split a plain-text file into slides.
@@ -476,29 +566,45 @@ def _parse_txt(path: Path) -> tuple[list[list[dict]], list[str]]:
     A single blank line is treated as a paragraph break within the same slide.
     """
     text = path.read_text(encoding="utf-8", errors="replace")
+    # Detect RTF (TextEdit on macOS saves .rtf even with .txt extension sometimes)
+    if text.lstrip().startswith(r"{\rtf"):
+        text = _strip_rtf(text)
     # Normalise line endings and non-breaking spaces (common from Word/Google Docs exports)
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\xa0", " ")
     # Split on 2+ consecutive blank lines (lines containing only whitespace count as blank)
     raw_blocks = re.split(r"\n(?:[ \t]*\n){2,}", text.strip())
     slides = []
+    BULLET_CHARS = ('•', '·', '▪', '►', '-', '*')
     for block in raw_blocks:
         block = block.strip()
         if not block:
             continue
         paragraphs = []
+        found_heading = False
         for line in block.split("\n"):
             line = line.rstrip()
             if not line:
                 continue
+            is_bullet = line.lstrip().startswith(BULLET_CHARS)
+            if is_bullet:
+                # Strip the leading bullet character + spaces — the slide
+                # builder adds its own "• " prefix
+                line = line.lstrip().lstrip(''.join(BULLET_CHARS)).strip()
+                if not line:
+                    continue
+            # First non-bullet line of the slide is treated as the heading
+            is_heading = (not is_bullet) and (not found_heading)
+            if is_heading:
+                found_heading = True
             paragraphs.append({
                 "text": line,
                 "runs": [{"text": line, "bold": False, "italic": False}],
-                "is_heading": False,
-                "is_bullet": False,
+                "is_heading": is_heading,
+                "is_bullet": is_bullet,
             })
         if paragraphs:
             slides.append(paragraphs)
-    return slides, []
+    return _merge_orphan_headings(slides), []
 
 
 def _parse_docx(path: Path) -> tuple[list[list[dict]], list[str]]:
@@ -520,9 +626,53 @@ def _parse_docx(path: Path) -> tuple[list[list[dict]], list[str]]:
         )
 
     consecutive_blank = 0
+    _BULLET_CHARS = ('•', '-', '*', '·', '◦', '▪', '▸', '►')
 
     for para in doc.paragraphs:
         style_name = (para.style.name or "").lower() if para.style else ""
+
+        # --- Multi-line paragraph (Shift+Enter / <w:br> line breaks) ----------
+        # Some DOCX files pack an entire slide's content into one <w:p> using
+        # soft line breaks, with literal • characters as bullet markers.
+        # Detect this pattern and split into a self-contained slide.
+        raw_text = para.text.replace("\xa0", " ")
+        if "\n" in raw_text:
+            lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+            if lines:
+                # Flush any accumulated content as its own slide first
+                if current:
+                    slides.append(current)
+                    current = []
+                consecutive_blank = 0
+
+                slide_paras = []
+                found_heading = False
+                for line in lines:
+                    if line.startswith(_BULLET_CHARS):
+                        stripped = line.lstrip(''.join(_BULLET_CHARS)).strip()
+                        if stripped:
+                            slide_paras.append({
+                                "text": stripped,
+                                "runs": [{"text": stripped, "bold": False, "italic": False,
+                                          "underline": False, "color": None, "highlight": None}],
+                                "is_heading": False,
+                                "is_bullet": True,
+                            })
+                    else:
+                        slide_paras.append({
+                            "text": line,
+                            "runs": [{"text": line, "bold": False, "italic": False,
+                                      "underline": False, "color": None, "highlight": None}],
+                            "is_heading": not found_heading,
+                            "is_bullet": False,
+                        })
+                        found_heading = True
+
+                if slide_paras:
+                    slides.append(slide_paras)
+            continue
+        # --- End multi-line paragraph handling --------------------------------
+
         is_heading = "heading" in style_name
         is_bullet  = "list" in style_name or "bullet" in style_name
 
@@ -618,7 +768,7 @@ def _parse_docx(path: Path) -> tuple[list[list[dict]], list[str]]:
     if current:
         slides.append(current)
 
-    return slides, warnings
+    return _merge_orphan_headings(slides), warnings
 
 
 # --- Font-fitting ---
@@ -674,15 +824,17 @@ def _add_text_slide(
         fill.solid()
         fill.fore_color.rgb = RGBColor(0, 0, 0)
 
-    margin = Inches(_TXT_MARGIN_IN)
+    side_margin = Inches(_TXT_MARGIN_IN)
+    top_margin  = Inches(_TXT_TOP_MARGIN_IN)
     txBox  = slide.shapes.add_textbox(
-        left   = margin,
-        top    = margin,
-        width  = Emu(SLIDE_WIDTH_EMU)  - margin * 2,
-        height = Emu(SLIDE_HEIGHT_EMU) - margin * 2,
+        left   = side_margin,
+        top    = top_margin,
+        width  = Emu(SLIDE_WIDTH_EMU)  - side_margin * 2,
+        height = Emu(SLIDE_HEIGHT_EMU) - top_margin  * 2,
     )
     tf = txBox.text_frame
     tf.word_wrap = True
+    tf.auto_size = MSO_AUTO_SIZE.SHAPE_TO_FIT_TEXT
 
     align = PP_ALIGN.LEFT if text_align == "left" else PP_ALIGN.CENTER
 
@@ -707,7 +859,7 @@ def _add_text_slide(
             r = p.add_run()
             r.text        = rd.get("text", "")
             r.font.size   = Pt(eff_size)
-            r.font.bold   = rd.get("bold")      or False
+            r.font.bold   = True if is_heading else (rd.get("bold") or False)
             r.font.italic = rd.get("italic")    or False
             if rd.get("underline"):
                 r.font.underline = True
@@ -716,6 +868,117 @@ def _add_text_slide(
                 r.font.color.rgb = RGBColor(*rd["color"])
             elif dark_mode:
                 r.font.color.rgb = RGBColor(255, 255, 255)
+
+
+# --- Overflow analysis ---
+
+def docx_analyze(path: Path) -> dict:
+    """Parse a DOCX/TXT and report which slides overflow at minimum font size."""
+    ext = path.suffix.lower()
+    try:
+        if ext == ".txt":
+            slides, _ = _parse_txt(path)
+        elif ext == ".docx":
+            slides, _ = _parse_docx(path)
+        else:
+            return {"ok": False, "error": f"Unsupported file type: {ext}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    overflow_slides = []
+    for i, paragraphs in enumerate(slides):
+        _, overflowed = _fit_font_size(paragraphs)
+        if overflowed:
+            heading = next(
+                (p["text"].strip() for p in paragraphs if p.get("is_heading") and p.get("text", "").strip()),
+                None,
+            )
+            lines = [p["text"] for p in paragraphs if p.get("text", "").strip()]
+            overflow_slides.append({
+                "slide_index": i,
+                "heading": heading,
+                "lines": lines,
+            })
+
+    return {"ok": True, "total_slides": len(slides), "overflow_slides": overflow_slides}
+
+
+def _find_spill_break(paragraphs: list[dict]) -> int:
+    """Return index to split after: largest k where paragraphs[:k] fits at min font."""
+    lo, hi = 1, len(paragraphs) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        _, overflowed = _fit_font_size(paragraphs[:mid])
+        if not overflowed:
+            lo = mid
+        else:
+            hi = mid - 1
+    return max(1, lo)
+
+
+def _find_midpoint_break(paragraphs: list[dict]) -> int:
+    """Split near midpoint, never ending a slide mid-sentence."""
+    n = len(paragraphs)
+    if n <= 1:
+        return 1
+    SENTENCE_ENDS = {'.', '!', '?', '…'}
+    mid = n // 2
+    for delta in range(n):
+        for k in [mid - delta, mid + delta]:
+            if 0 < k < n:
+                text = paragraphs[k - 1].get("text", "").rstrip()
+                if text and text[-1] in SENTENCE_ENDS:
+                    return k
+    return mid
+
+
+def _apply_split_choices(slides: list, choices: list) -> list:
+    """Apply user split choices to the parsed slide list. Returns expanded list."""
+    import json as _json  # already imported at module level but safe to re-import
+
+    # Process in reverse order so index offsets don't cascade
+    result = list(slides)
+    for choice in sorted(choices, key=lambda c: c.get("slide_index", 0), reverse=True):
+        idx = choice.get("slide_index", 0)
+        if idx >= len(result):
+            continue
+        paragraphs = result[idx]
+        mode = choice.get("mode", "midpoint")
+
+        if mode == "spill":
+            break_at = _find_spill_break(paragraphs)
+        elif mode == "midpoint":
+            break_at = _find_midpoint_break(paragraphs)
+        elif mode == "manual":
+            break_at = int(choice.get("break_line", _find_midpoint_break(paragraphs)))
+        else:
+            continue
+
+        break_at = max(1, min(break_at, len(paragraphs) - 1))
+        part1 = paragraphs[:break_at]
+        part2 = list(paragraphs[break_at:])
+
+        if not part2:
+            continue
+
+        # Prepend cont. heading if first paragraph is a heading
+        heading_text = None
+        if paragraphs and paragraphs[0].get("is_heading"):
+            heading_text = paragraphs[0].get("text", "").strip()
+        if heading_text:
+            cont_text = f"{heading_text} cont."
+            part2.insert(0, {
+                "text": cont_text,
+                "runs": [{"text": cont_text, "bold": True, "italic": False,
+                          "underline": False, "color": None, "highlight": None}],
+                "is_heading": True,
+                "is_bullet": False,
+            })
+
+        result[idx] = part1
+        result.insert(idx + 1, part2)
+
+    return result
 
 
 # --- docx_info (for IPC query before conversion) ---
@@ -755,6 +1018,7 @@ def convert_text_doc(
     total_files: int = 1,
     slide_theme: str = "light",
     text_align: str = "left",
+    split_choices: list | None = None,
 ) -> dict:
     """Convert a .txt or .docx file to a PPTX using blank-line slide boundaries."""
     ext  = file_path.suffix.lower()
@@ -785,6 +1049,10 @@ def convert_text_doc(
         msg = "No slide content found — is the file empty?"
         _emit({"type": "error", "file": str(file_path), "message": msg})
         return {"ok": False, "message": msg}
+
+    # Apply user split choices (overflow resolution from UI)
+    if split_choices:
+        slides_data = _apply_split_choices(slides_data, split_choices)
 
     prs = Presentation()
     prs.slide_width  = Emu(SLIDE_WIDTH_EMU)
@@ -930,6 +1198,10 @@ def main():
                         help="Run preflight health check and exit")
     parser.add_argument("--docx-info", default=None, metavar="FILE",
                         help="Return slide/word count for a .txt or .docx file (IPC mode)")
+    parser.add_argument("--analyze", default=None, metavar="FILE",
+                        help="Analyze a DOCX/TXT for overflow slides and emit JSON")
+    parser.add_argument("--split-choices", default=None, metavar="JSON",
+                        help="JSON array of split choices [{slide_index,mode,break_line}]")
 
     args = parser.parse_args()
     _ipc_mode = args.ipc
@@ -937,6 +1209,12 @@ def main():
     if args.docx_info:
         _ipc_mode = True  # always emit JSON for this command
         docx_info(Path(args.docx_info))
+        sys.exit(0)
+
+    if args.analyze:
+        _ipc_mode = True
+        result = docx_analyze(Path(args.analyze))
+        print(json.dumps({"type": "docx_analyze", **result}))
         sys.exit(0)
 
     if args.preflight:
@@ -961,6 +1239,8 @@ def main():
         print(f"SlideFluid 3.0 — {len(pdfs)} file(s) queued")
         print(f"  DPI: {args.dpi}  |  Fill: {args.fill}  |  Suffix: '{args.suffix}'")
 
+    split_choices = json.loads(args.split_choices) if args.split_choices else None
+
     sys.exit(
         run_batch(
             pdf_paths=pdfs,
@@ -973,6 +1253,7 @@ def main():
             poppler_path=args.poppler_path,
             slide_theme=args.slide_theme,
             text_align=args.text_align,
+            split_choices=split_choices,
         )
     )
 

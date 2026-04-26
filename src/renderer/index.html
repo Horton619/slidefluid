@@ -59,6 +59,7 @@
       </div>
 
       <div id="queue-list" role="list" aria-label="Conversion queue"></div>
+      <button id="btn-clear-done" class="hidden" type="button">Clear all done</button>
 
       <div id="progress-section">
         <div class="progress-overall" id="progress-overall-text"></div>
@@ -228,6 +229,40 @@
         <button id="btn-settings-done">Done</button>
       </div>
 
+    </div>
+  </div>
+
+  <!-- Overflow Resolution Modal -->
+  <div id="overflow-overlay" class="settings-overlay hidden">
+    <div class="overflow-panel" role="dialog" aria-modal="true" aria-label="Overflow resolution">
+      <div class="overflow-header">
+        <span class="overflow-title">Slides may overflow</span>
+        <button class="settings-close" id="btn-overflow-close" aria-label="Close">✕</button>
+      </div>
+      <p class="overflow-subtitle">These slides have too much content to fit at minimum font size. Choose how to handle each:</p>
+      <div id="overflow-slides-list" class="overflow-slides-list"></div>
+      <div class="overflow-footer">
+        <button class="settings-done" id="btn-overflow-apply">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Break Picker Modal -->
+  <div id="break-picker-overlay" class="settings-overlay hidden">
+    <div class="break-picker-panel" role="dialog" aria-modal="true" aria-label="Pick split point">
+      <div class="overflow-header">
+        <span class="overflow-title" id="break-picker-title">Pick split point</span>
+        <button class="settings-close" id="btn-break-picker-close" aria-label="Close">✕</button>
+      </div>
+      <div class="break-picker-body">
+        <div class="break-picker-slide-label">Slide A</div>
+        <div id="break-picker-lines" class="break-picker-lines"></div>
+        <div class="break-picker-slide-label" id="break-picker-slide-b-label">Slide B</div>
+      </div>
+      <div class="overflow-footer">
+        <button class="btn-secondary-small" id="btn-break-picker-cancel">Cancel</button>
+        <button class="settings-done" id="btn-break-picker-confirm">Confirm Split</button>
+      </div>
     </div>
   </div>
 
