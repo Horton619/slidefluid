@@ -24,7 +24,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const os = require('os');
-const { autoUpdater } = require('electron-updater');
+const https = require('https');
 
 // ---------------------------------------------------------------------------
 // Simple JSON settings store (no external dep — we write it ourselves)
@@ -47,7 +47,7 @@ class SettingsStore {
       filenameSuffix: '',
       skin: 'professional',          // professional | fun
       previewMode: 'graphical',      // graphical | live  (live = PDF.js, Phase 8)
-      writeReport: true,             // write a .txt conversion report to output folder
+      writeReport: false,            // write a .txt conversion report to output folder (off by default)
     };
   }
 
@@ -841,35 +841,148 @@ ipcMain.handle('fs:writeFile', async (event, filePath, content) => {
 
 // --- Auto-updater ---
 
-autoUpdater.autoDownload = false;
-autoUpdater.autoInstallOnAppQuit = true;
+// --- Self-rolled updater: GitHub Releases API + direct DMG/EXE download ---
+// We bypass electron-updater because ad-hoc-signed Mac apps can't auto-install
+// (macOS Gatekeeper requires same-identity signing for in-place replacement).
+// Instead: detect newer release via GitHub API, download installer to ~/Downloads,
+// reveal in Finder/Explorer for the user to run manually.
 
-function setupAutoUpdater(win) {
-  const send = (payload) => {
-    if (win && !win.isDestroyed()) win.webContents.send('update:status', payload);
-  };
+const _UPDATE_REPO = 'Horton619/slidefluid';
+let _latestAsset = null;        // { url, name, size, version } when an update is available
+let _downloadInProgress = false;
 
-  autoUpdater.on('checking-for-update',  ()     => send({ state: 'checking' }));
-  autoUpdater.on('update-not-available', ()     => send({ state: 'current', version: app.getVersion() }));
-  autoUpdater.on('update-available',     (info) => send({ state: 'available', version: info.version }));
-  autoUpdater.on('update-downloaded',    (info) => send({ state: 'ready', version: info.version }));
-  autoUpdater.on('download-progress',    (p)    => send({ state: 'downloading', percent: Math.round(p.percent) }));
-  autoUpdater.on('error', (err) => {
-    log('warn', `Auto-updater error: ${err.message}`);
-    send({ state: 'error', message: err.message });
+function _ghApiGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, {
+      headers: { 'User-Agent': 'SlideFluid', 'Accept': 'application/vnd.github+json' }
+    }, (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`GitHub API HTTP ${res.statusCode}`));
+        return;
+      }
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
+      });
+    }).on('error', reject);
   });
 }
 
-ipcMain.handle('update:check', () => {
-  try { autoUpdater.checkForUpdates(); } catch (_) { /* no-op in dev/unsigned builds */ }
-  return true;
+function _pickAsset(assets) {
+  if (process.platform === 'darwin') {
+    return assets.find(a => /-arm64\.dmg$/i.test(a.name)) ||
+           assets.find(a => /\.dmg$/i.test(a.name));
+  }
+  if (process.platform === 'win32') {
+    return assets.find(a => /\.exe$/i.test(a.name));
+  }
+  return null;
+}
+
+function _compareVersions(a, b) {
+  const pa = String(a).replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b).replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function _downloadFile(url, dest, onProgress) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    const handleResponse = (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        // GitHub asset URLs redirect to S3
+        https.get(res.headers.location, { headers: { 'User-Agent': 'SlideFluid' } }, handleResponse).on('error', reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      const total = parseInt(res.headers['content-length'], 10) || 0;
+      let received = 0;
+      res.on('data', (chunk) => {
+        received += chunk.length;
+        if (total > 0) onProgress(Math.round((received / total) * 100));
+      });
+      res.pipe(file);
+      file.on('finish', () => file.close(() => resolve()));
+      file.on('error', (err) => { try { fs.unlinkSync(dest); } catch (_) {} ; reject(err); });
+    };
+    https.get(url, { headers: { 'User-Agent': 'SlideFluid' } }, handleResponse).on('error', reject);
+  });
+}
+
+function _sendUpdateStatus(payload) {
+  if (mainWindow && !mainWindow.isDestroyed())
+    mainWindow.webContents.send('update:status', payload);
+}
+
+function setupAutoUpdater(_win) {
+  // No-op — kept for backwards compatibility with existing call site.
+  // All update behaviour is in the IPC handlers below.
+}
+
+ipcMain.handle('update:check', async () => {
+  _sendUpdateStatus({ state: 'checking' });
+  try {
+    const release = await _ghApiGet(`https://api.github.com/repos/${_UPDATE_REPO}/releases/latest`);
+    const latestVersion = release.tag_name || release.name || '';
+    const currentVersion = app.getVersion();
+    if (_compareVersions(latestVersion, currentVersion) <= 0) {
+      _latestAsset = null;
+      _sendUpdateStatus({ state: 'current', version: currentVersion });
+      return true;
+    }
+    const asset = _pickAsset(release.assets || []);
+    if (!asset) {
+      _sendUpdateStatus({ state: 'error', message: `No installer found for ${process.platform}` });
+      return false;
+    }
+    _latestAsset = {
+      url: asset.browser_download_url,
+      name: asset.name,
+      size: asset.size,
+      version: latestVersion.replace(/^v/i, ''),
+    };
+    _sendUpdateStatus({ state: 'available', version: _latestAsset.version, name: _latestAsset.name });
+    return true;
+  } catch (err) {
+    log('warn', `Update check failed: ${err.message}`);
+    _sendUpdateStatus({ state: 'error', message: err.message });
+    return false;
+  }
 });
 
-ipcMain.handle('update:download', () => {
-  try { autoUpdater.downloadUpdate(); } catch (_) {}
-  return true;
+ipcMain.handle('update:download', async () => {
+  if (!_latestAsset || _downloadInProgress) return false;
+  const downloadsDir = app.getPath('downloads');
+  const filePath = path.join(downloadsDir, _latestAsset.name);
+  _downloadInProgress = true;
+  _sendUpdateStatus({ state: 'downloading', percent: 0 });
+  try {
+    await _downloadFile(_latestAsset.url, filePath, (percent) => {
+      _sendUpdateStatus({ state: 'downloading', percent });
+    });
+    _latestAsset.path = filePath;
+    _sendUpdateStatus({ state: 'ready', version: _latestAsset.version, path: filePath });
+    return true;
+  } catch (err) {
+    log('warn', `Update download failed: ${err.message}`);
+    _sendUpdateStatus({ state: 'error', message: err.message });
+    return false;
+  } finally {
+    _downloadInProgress = false;
+  }
 });
 
 ipcMain.on('update:install', () => {
-  autoUpdater.quitAndInstall();
+  if (_latestAsset && _latestAsset.path && fs.existsSync(_latestAsset.path)) {
+    shell.showItemInFolder(_latestAsset.path);
+  }
 });

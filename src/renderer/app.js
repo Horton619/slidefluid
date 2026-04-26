@@ -1479,7 +1479,7 @@ async function beginConversion() {
     state.isConverting = false;
     updateConvertButton();
 
-    if (state.settings.writeReport !== false && _convReport) {
+    if (state.settings.writeReport === true && _convReport) {
       await _writeConversionReport();
     }
 
@@ -1790,7 +1790,7 @@ function syncSettingsFormFromState() {
   document.getElementById('setting-suffix').value = s.filenameSuffix || '';
 
   // Output — write report
-  document.getElementById('setting-write-report').checked = s.writeReport !== false;
+  document.getElementById('setting-write-report').checked = s.writeReport === true;
 
   // Output — folder display
   renderSettingsOutputFolder();
@@ -1934,6 +1934,7 @@ function setupSettingsModal() {
         break;
       case 'available':
         setUpdateStatus(`Update available: v${payload.version}`, 'warn');
+        btnDownload.textContent   = `Download v${payload.version}`;
         btnDownload.style.display = '';
         btnInstall.style.display  = 'none';
         break;
@@ -1943,8 +1944,9 @@ function setupSettingsModal() {
         btnInstall.style.display  = 'none';
         break;
       case 'ready':
-        setUpdateStatus(`v${payload.version} ready to install`, 'ok');
+        setUpdateStatus(`v${payload.version} downloaded — open the installer to update`, 'ok');
         btnDownload.style.display = 'none';
+        btnInstall.textContent    = 'Show in Downloads';
         btnInstall.style.display  = '';
         break;
       case 'error':

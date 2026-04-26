@@ -184,19 +184,22 @@
             <input type="text" id="setting-suffix" class="settings-input" placeholder="e.g. _slides" maxlength="64">
           </div>
 
-          <div class="settings-row settings-row-inline">
-            <div class="settings-row-label">Write conversion report</div>
-            <label class="toggle-label">
-              <input type="checkbox" id="setting-write-report">
-              <span class="toggle-track"></span>
-            </label>
-          </div>
-          <div class="settings-hint">Saves a .txt summary alongside each batch — file names, slide counts, and any warnings.</div>
-
         </div>
 
         <!-- Diagnostics tab -->
         <div class="settings-pane" id="tab-diagnostics">
+          <div class="diag-log-section">
+            <div class="settings-section-label">Conversion report</div>
+            <div class="settings-row settings-row-inline">
+              <div class="settings-row-label">Write report file with each batch</div>
+              <label class="toggle-label">
+                <input type="checkbox" id="setting-write-report">
+                <span class="toggle-track"></span>
+              </label>
+            </div>
+            <div class="settings-hint">Saves a .txt summary alongside each batch — file names, slide counts, and any warnings.</div>
+          </div>
+
           <div class="diag-actions">
             <button class="btn-diag-primary" id="btn-run-preflight">Run Preflight Check</button>
             <button class="btn-diag-secondary" id="btn-copy-preflight" style="display:none">Copy to Clipboard</button>
