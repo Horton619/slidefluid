@@ -1266,6 +1266,93 @@ main {
 .update-status-line.warn  { color: var(--warning); }
 .update-status-line.error { color: var(--error); }
 
+/* Auto-update toast — bottom strip, slides in from below */
+.update-toast {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 28px;            /* sit above the footer */
+  z-index: 60;
+  background: rgba(13, 30, 46, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+  backdrop-filter: blur(6px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transform: translateY(0);
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+.update-toast.hidden {
+  transform: translateY(140%);
+  opacity: 0;
+  pointer-events: none;
+}
+.update-toast-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.update-toast-label {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.update-toast-percent {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  min-width: 38px;
+  text-align: right;
+}
+.update-toast-action {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border-radius: 4px;
+  border: none;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: filter 0.12s;
+}
+.update-toast-action:hover { filter: brightness(1.1); }
+.update-toast-dismiss {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.update-toast-dismiss:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.update-toast-bar {
+  height: 3px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.update-toast-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+.update-toast.is-ready .update-toast-bar { display: none; }   /* hide bar once done */
+.update-toast.is-error .update-toast-label { color: var(--error); }
+.update-toast.is-error .update-toast-fill   { background: var(--error); }
+
 /* ---------------------------------------------------------------------------
    Drop zone reject flash (6.1)
 --------------------------------------------------------------------------- */

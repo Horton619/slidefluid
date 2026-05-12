@@ -160,11 +160,83 @@ async function init() {
   const clearBtn = document.getElementById('btn-clear-done');
   if (clearBtn) clearBtn.addEventListener('click', clearAllDone);
 
+  setupUpdateToast();
+
   renderOutputFolder();
   updateConvertButton();
   updateClearDoneButton();
   updateSidebar();
   updateSkinText();
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update toast — bottom strip that surfaces download progress + install
+// CTA outside the Settings panel. Mirrors the same update:status events as
+// the Diagnostics panel; both listeners coexist.
+// ---------------------------------------------------------------------------
+function setupUpdateToast() {
+  const toast       = document.getElementById('update-toast');
+  const labelEl     = document.getElementById('update-toast-label');
+  const percentEl   = document.getElementById('update-toast-percent');
+  const fillEl      = document.getElementById('update-toast-fill');
+  const actionBtn   = document.getElementById('update-toast-action');
+  const dismissBtn  = document.getElementById('update-toast-dismiss');
+  if (!toast) return;
+
+  let dismissedVersion = null;
+  let currentVersion   = null;   // last version seen in any payload
+
+  function show()      { toast.classList.remove('hidden'); }
+  function hide()      { toast.classList.add('hidden'); }
+  function setMode(m)  {
+    toast.classList.toggle('is-ready', m === 'ready');
+    toast.classList.toggle('is-error', m === 'error');
+  }
+
+  dismissBtn.addEventListener('click', () => {
+    // Remember the version the user dismissed so we don't re-pop the same one
+    if (currentVersion) dismissedVersion = currentVersion;
+    hide();
+  });
+  actionBtn.addEventListener('click', () => {
+    window.slidefluid.installUpdate();
+  });
+
+  window.slidefluid.onUpdateStatus((payload) => {
+    if (payload.version) currentVersion = payload.version;
+    switch (payload.state) {
+      case 'downloading':
+        setMode('downloading');
+        labelEl.textContent = `Downloading update${currentVersion ? ` v${currentVersion}` : ''}…`;
+        percentEl.textContent = `${payload.percent ?? 0}%`;
+        fillEl.style.width = `${payload.percent ?? 0}%`;
+        actionBtn.style.display = 'none';
+        show();
+        break;
+      case 'ready':
+        setMode('ready');
+        labelEl.textContent = `Update v${payload.version} ready`;
+        percentEl.textContent = '';
+        fillEl.style.width = '100%';
+        actionBtn.style.display = '';
+        if (dismissedVersion !== payload.version) show();
+        break;
+      case 'error':
+        setMode('error');
+        labelEl.textContent = `Update error: ${payload.message || 'unknown'}`;
+        percentEl.textContent = '';
+        actionBtn.style.display = 'none';
+        show();
+        setTimeout(() => { if (toast.classList.contains('is-error')) hide(); }, 6000);
+        break;
+      case 'checking':
+      case 'available':   // native dialog handles the prompt for this state
+      case 'current':
+        // Silent — no banner for "still checking", "you got the prompt already",
+        // or "you're up to date."
+        break;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

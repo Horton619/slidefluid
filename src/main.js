@@ -875,6 +875,9 @@ autoUpdater.logger = {
 // Prevents the "ready to install" dialog from popping if a check-only flow
 // happens to surface a build that's still mid-download from a prior session.
 let _userOptedToDownload = false;
+// Latest version offered by autoUpdater — set on `update-available`, reused on
+// `download-progress` so the toast can show "Downloading update v3.1.5…"
+let _pendingUpdateVersion = null;
 
 function _sendUpdateStatus(payload) {
   if (mainWindow && !mainWindow.isDestroyed())
@@ -890,6 +893,7 @@ autoUpdater.on('update-not-available', (info) => {
 });
 
 autoUpdater.on('update-available', async (info) => {
+  _pendingUpdateVersion = info.version;
   _sendUpdateStatus({ state: 'available', version: info.version });
   // Native dialog: "Update available. Download now?"
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -912,7 +916,11 @@ autoUpdater.on('update-available', async (info) => {
 });
 
 autoUpdater.on('download-progress', (p) => {
-  _sendUpdateStatus({ state: 'downloading', percent: Math.round(p.percent || 0) });
+  _sendUpdateStatus({
+    state: 'downloading',
+    percent: Math.round(p.percent || 0),
+    version: _pendingUpdateVersion,
+  });
 });
 
 autoUpdater.on('update-downloaded', async (info) => {

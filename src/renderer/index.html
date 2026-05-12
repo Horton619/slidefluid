@@ -97,6 +97,19 @@
 
   </main>
 
+  <!-- Auto-update toast — slides in during download / when an update is ready -->
+  <div id="update-toast" class="update-toast hidden" role="status" aria-live="polite">
+    <div class="update-toast-row">
+      <span class="update-toast-label" id="update-toast-label">Downloading update…</span>
+      <span class="update-toast-percent" id="update-toast-percent"></span>
+      <button class="update-toast-action" id="update-toast-action" style="display:none">Install &amp; Restart</button>
+      <button class="update-toast-dismiss" id="update-toast-dismiss" aria-label="Dismiss">✕</button>
+    </div>
+    <div class="update-toast-bar">
+      <div class="update-toast-fill" id="update-toast-fill"></div>
+    </div>
+  </div>
+
   <!-- Footer -->
   <footer class="app-footer">
     <span class="footer-copy">&#169; 2026 Visual Entropy Productions</span>
