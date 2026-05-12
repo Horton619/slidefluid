@@ -1944,9 +1944,9 @@ function setupSettingsModal() {
         btnInstall.style.display  = 'none';
         break;
       case 'ready':
-        setUpdateStatus(`v${payload.version} downloaded — open the installer to update`, 'ok');
+        setUpdateStatus(`v${payload.version} downloaded — restart to install`, 'ok');
         btnDownload.style.display = 'none';
-        btnInstall.textContent    = 'Show in Downloads';
+        btnInstall.textContent    = 'Install & Restart';
         btnInstall.style.display  = '';
         break;
       case 'error':

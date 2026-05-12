@@ -1,6 +1,6 @@
 {
   "name": "slidefluid",
-  "version": "3.1.3",
+  "version": "3.1.4",
   "description": "PDF to PPTX converter — AVSC / Visual Entropy Productions",
   "main": "src/main.js",
   "scripts": {
@@ -36,7 +36,9 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": { "teamId": "L5KZ5KGKXC" },
+      "notarize": {
+        "teamId": "L5KZ5KGKXC"
+      },
       "extraResources": [
         {
           "from": "backend/dist/slidefluid_convert",

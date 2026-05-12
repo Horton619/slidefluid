@@ -24,7 +24,6 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const os = require('os');
-const https = require('https');
 
 // ---------------------------------------------------------------------------
 // Simple JSON settings store (no external dep — we write it ourselves)
@@ -456,6 +455,18 @@ function createWindow() {
   });
 
   setupAutoUpdater(mainWindow);
+
+  // Launch-time update check. Packaged builds only — autoUpdater is a no-op
+  // in dev (`npm start`). Delayed 3s so the window is fully painted before
+  // any dialog can pop, and so transient network hiccups at launch don't
+  // bother the user.
+  if (app.isPackaged) {
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((err) => {
+        log('warn', `Launch update check failed: ${err.message}`);
+      });
+    }, 3000);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -840,149 +851,123 @@ ipcMain.handle('fs:writeFile', async (event, filePath, content) => {
 });
 
 // --- Auto-updater ---
+// Real in-place auto-update via electron-updater. Requires the app to be
+// signed + notarized with the same Developer ID as the running build (the
+// notarization recipe in package.json mac block delivers that). Reads
+// `latest-mac.yml` / `latest.yml` from GitHub Releases on the configured
+// `publish: github` target in package.json's build config.
 
-// --- Self-rolled updater: GitHub Releases API + direct DMG/EXE download ---
-// We bypass electron-updater because ad-hoc-signed Mac apps can't auto-install
-// (macOS Gatekeeper requires same-identity signing for in-place replacement).
-// Instead: detect newer release via GitHub API, download installer to ~/Downloads,
-// reveal in Finder/Explorer for the user to run manually.
+const { autoUpdater } = require('electron-updater');
 
-const _UPDATE_REPO = 'Horton619/slidefluid';
-let _latestAsset = null;        // { url, name, size, version } when an update is available
-let _downloadInProgress = false;
+// Don't auto-download — let the user confirm via dialog/UI first.
+autoUpdater.autoDownload = false;
+// If the app quits while an update is downloaded, install on next launch.
+autoUpdater.autoInstallOnAppQuit = true;
+// Pipe electron-updater's log into our app log for debugging.
+autoUpdater.logger = {
+  info:  (msg) => log('info',  `[updater] ${msg}`),
+  warn:  (msg) => log('warn',  `[updater] ${msg}`),
+  error: (msg) => log('error', `[updater] ${msg}`),
+  debug: () => {}, // suppress debug spam
+};
 
-function _ghApiGet(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, {
-      headers: { 'User-Agent': 'SlideFluid', 'Accept': 'application/vnd.github+json' }
-    }, (res) => {
-      if (res.statusCode !== 200) {
-        reject(new Error(`GitHub API HTTP ${res.statusCode}`));
-        return;
-      }
-      let data = '';
-      res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
-      });
-    }).on('error', reject);
-  });
-}
-
-function _pickAsset(assets) {
-  if (process.platform === 'darwin') {
-    return assets.find(a => /-arm64\.dmg$/i.test(a.name)) ||
-           assets.find(a => /\.dmg$/i.test(a.name));
-  }
-  if (process.platform === 'win32') {
-    return assets.find(a => /\.exe$/i.test(a.name));
-  }
-  return null;
-}
-
-function _compareVersions(a, b) {
-  const pa = String(a).replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
-  const pb = String(b).replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
-function _downloadFile(url, dest, onProgress) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    const handleResponse = (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // GitHub asset URLs redirect to S3
-        https.get(res.headers.location, { headers: { 'User-Agent': 'SlideFluid' } }, handleResponse).on('error', reject);
-        return;
-      }
-      if (res.statusCode !== 200) {
-        reject(new Error(`HTTP ${res.statusCode}`));
-        return;
-      }
-      const total = parseInt(res.headers['content-length'], 10) || 0;
-      let received = 0;
-      res.on('data', (chunk) => {
-        received += chunk.length;
-        if (total > 0) onProgress(Math.round((received / total) * 100));
-      });
-      res.pipe(file);
-      file.on('finish', () => file.close(() => resolve()));
-      file.on('error', (err) => { try { fs.unlinkSync(dest); } catch (_) {} ; reject(err); });
-    };
-    https.get(url, { headers: { 'User-Agent': 'SlideFluid' } }, handleResponse).on('error', reject);
-  });
-}
+// Tracks whether a user explicitly opted into downloading this release.
+// Prevents the "ready to install" dialog from popping if a check-only flow
+// happens to surface a build that's still mid-download from a prior session.
+let _userOptedToDownload = false;
 
 function _sendUpdateStatus(payload) {
   if (mainWindow && !mainWindow.isDestroyed())
     mainWindow.webContents.send('update:status', payload);
 }
 
+autoUpdater.on('checking-for-update', () => {
+  _sendUpdateStatus({ state: 'checking' });
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  _sendUpdateStatus({ state: 'current', version: info?.version || app.getVersion() });
+});
+
+autoUpdater.on('update-available', async (info) => {
+  _sendUpdateStatus({ state: 'available', version: info.version });
+  // Native dialog: "Update available. Download now?"
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    buttons: ['Download', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Update available',
+    message: `SlideFluid ${info.version} is available.`,
+    detail: 'A new version is ready to download. The current version will keep working until you choose to install.',
+  });
+  if (response === 0) {
+    _userOptedToDownload = true;
+    autoUpdater.downloadUpdate().catch((err) => {
+      log('warn', `Update download failed: ${err.message}`);
+      _sendUpdateStatus({ state: 'error', message: err.message });
+    });
+  }
+});
+
+autoUpdater.on('download-progress', (p) => {
+  _sendUpdateStatus({ state: 'downloading', percent: Math.round(p.percent || 0) });
+});
+
+autoUpdater.on('update-downloaded', async (info) => {
+  _sendUpdateStatus({ state: 'ready', version: info.version });
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  // Only auto-prompt if the user actively opted into this download path.
+  // Otherwise wait for them to click "Install & Restart" in Diagnostics.
+  if (!_userOptedToDownload) return;
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    buttons: ['Restart and install', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Update ready',
+    message: `SlideFluid ${info.version} is ready to install.`,
+    detail: 'Restart now to apply the update. The app will reopen automatically.',
+  });
+  if (response === 0) {
+    autoUpdater.quitAndInstall();
+  }
+});
+
+autoUpdater.on('error', (err) => {
+  log('warn', `Auto-updater error: ${err?.message || err}`);
+  _sendUpdateStatus({ state: 'error', message: err?.message || String(err) });
+});
+
 function setupAutoUpdater(_win) {
   // No-op — kept for backwards compatibility with existing call site.
-  // All update behaviour is in the IPC handlers below.
+  // Event handlers above register at module load; launch-time check fires
+  // from the BrowserWindow ready-to-show hook in createWindow().
 }
 
+// Manual triggers from the Diagnostics tab.
 ipcMain.handle('update:check', async () => {
-  _sendUpdateStatus({ state: 'checking' });
   try {
-    const release = await _ghApiGet(`https://api.github.com/repos/${_UPDATE_REPO}/releases/latest`);
-    const latestVersion = release.tag_name || release.name || '';
-    const currentVersion = app.getVersion();
-    if (_compareVersions(latestVersion, currentVersion) <= 0) {
-      _latestAsset = null;
-      _sendUpdateStatus({ state: 'current', version: currentVersion });
-      return true;
-    }
-    const asset = _pickAsset(release.assets || []);
-    if (!asset) {
-      _sendUpdateStatus({ state: 'error', message: `No installer found for ${process.platform}` });
-      return false;
-    }
-    _latestAsset = {
-      url: asset.browser_download_url,
-      name: asset.name,
-      size: asset.size,
-      version: latestVersion.replace(/^v/i, ''),
-    };
-    _sendUpdateStatus({ state: 'available', version: _latestAsset.version, name: _latestAsset.name });
+    await autoUpdater.checkForUpdates();
     return true;
   } catch (err) {
-    log('warn', `Update check failed: ${err.message}`);
-    _sendUpdateStatus({ state: 'error', message: err.message });
+    _sendUpdateStatus({ state: 'error', message: err?.message || String(err) });
     return false;
   }
 });
 
 ipcMain.handle('update:download', async () => {
-  if (!_latestAsset || _downloadInProgress) return false;
-  const downloadsDir = app.getPath('downloads');
-  const filePath = path.join(downloadsDir, _latestAsset.name);
-  _downloadInProgress = true;
-  _sendUpdateStatus({ state: 'downloading', percent: 0 });
   try {
-    await _downloadFile(_latestAsset.url, filePath, (percent) => {
-      _sendUpdateStatus({ state: 'downloading', percent });
-    });
-    _latestAsset.path = filePath;
-    _sendUpdateStatus({ state: 'ready', version: _latestAsset.version, path: filePath });
+    _userOptedToDownload = true;
+    await autoUpdater.downloadUpdate();
     return true;
   } catch (err) {
-    log('warn', `Update download failed: ${err.message}`);
-    _sendUpdateStatus({ state: 'error', message: err.message });
+    _sendUpdateStatus({ state: 'error', message: err?.message || String(err) });
     return false;
-  } finally {
-    _downloadInProgress = false;
   }
 });
 
 ipcMain.on('update:install', () => {
-  if (_latestAsset && _latestAsset.path && fs.existsSync(_latestAsset.path)) {
-    shell.showItemInFolder(_latestAsset.path);
-  }
+  autoUpdater.quitAndInstall();
 });
