@@ -154,6 +154,12 @@ contextBridge.exposeInMainWorld('slidefluid', {
   getDocxInfo: (filePath) => ipcRenderer.invoke('docx:info', filePath),
 
   /**
+   * Get slide/notes/builds stats for a .pptx file.
+   * Returns {ok, slideCount, totalNotesChars, slidesWithNotes, totalBuilds, slidesWithBuilds}.
+   */
+  getPptxInfo: (filePath) => ipcRenderer.invoke('pptx:info', filePath),
+
+  /**
    * Analyze a .txt or .docx file for overflow slides.
    * Returns {ok, totalSlides, overflowSlides: [{slide_index, heading, lines}]}
    */

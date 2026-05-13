@@ -120,6 +120,19 @@ const FUN_SUCCESS_MSGS = [
   'They were always PPT — the PDF identity was just a phase',
   'Go celebrate your PDFs living their new PPTX life!',
 ];
+// Fun skin — header tagline pool. One is picked on app launch and stays for
+// the session. Edit freely; this is purely cosmetic. Pro skin uses a static
+// "Transition to greatness" tagline (set in updateSkinText).
+const FUN_TAGLINES = [
+  'How does your PPT identify?',
+  'Format reassignment surgery',
+  'Slides, but they/them',
+  'Living their truth one slide at a time',
+  'Pre-PPTX to post-PPTX',
+  'Coming out of the .pdf closet',
+  'Affirming your slides since 2026',
+];
+let _funTaglinePicked = null;
 let _dropLabelIdx    = 0;
 let _progressMsgIdx  = 0;
 let _funMsgInterval  = null;
@@ -161,6 +174,9 @@ async function init() {
   if (clearBtn) clearBtn.addEventListener('click', clearAllDone);
 
   setupUpdateToast();
+  _setupSummaryModal();
+  _setupPptxOptions();
+  _setupCompanionBanner();
 
   renderOutputFolder();
   updateConvertButton();
@@ -314,6 +330,7 @@ async function addFiles(rawPaths) {
   // Categorize paths by extension
   const toScan   = [];   // pdf files / folders → expand via scanPaths
   const docxDirect = []; // .txt and .docx → add directly
+  const pptxDirect = []; // .pptx → add directly
   let hasDoc   = false;
   let hasOther = false;
 
@@ -324,6 +341,8 @@ async function addFiles(rawPaths) {
 
     if (ext === 'docx' || ext === 'txt') {
       docxDirect.push(p);
+    } else if (ext === 'pptx') {
+      pptxDirect.push(p);
     } else if (ext === 'doc') {
       hasDoc = true;
     } else if (ext === 'pdf' || ext === '') {
@@ -339,16 +358,20 @@ async function addFiles(rawPaths) {
 
   // Expand PDF folders
   const expandedPdfs = toScan.length ? await window.slidefluid.scanPaths(toScan) : [];
-  // Filter scanPaths results to PDFs only (scanPaths now returns all types from folders;
-  // keep only .pdf for the pdf pipeline, docx/txt come through docxDirect)
+  // Filter scanPaths results — folders may contain mixed types. PDFs go through
+  // pdfItems below; .pptx files from a scanned folder are folded into pptxDirect.
   const pdfPaths = expandedPdfs.filter(p => /\.pdf$/i.test(p));
+  for (const p of expandedPdfs) {
+    if (/\.pptx$/i.test(p) && !pptxDirect.includes(p)) pptxDirect.push(p);
+  }
 
   const existingPaths = new Set(state.queue.map(i => i.path));
 
   const freshPdfs  = pdfPaths.filter(p => !existingPaths.has(p));
   const freshDocxs = docxDirect.filter(p => !existingPaths.has(p));
+  const freshPptxs = pptxDirect.filter(p => !existingPaths.has(p));
 
-  if (freshPdfs.length === 0 && freshDocxs.length === 0) return;
+  if (freshPdfs.length === 0 && freshDocxs.length === 0 && freshPptxs.length === 0) return;
 
   const isFirstDrop = state.queue.length === 0;
 
@@ -370,14 +393,36 @@ async function addFiles(rawPaths) {
     progress: 0, progressMsg: '', outputPath: null, errorMsg: null,
   }));
 
-  const newItems = [...pdfItems, ...docxItems];
+  const pptxItems = freshPptxs.map(p => ({
+    id: nextId(), path: p, name: p.split('/').pop(),
+    fileType: 'pptx', status: 'loading',
+    slideCount: null, totalNotesChars: null, slidesWithNotes: null,
+    totalBuilds: null, slidesWithBuilds: null,
+    pptxMode: 'teleprompter',                              // teleprompter | split | companion
+    pptxThreshold: state.settings.pptxThreshold || 12,     // max effective lines per chunk
+    pptxIncludeHeaders: true,                              // [Slide N] in teleprompter output
+    pptxIncludeSlideNumbers: false,                        // slide numbers on split/companion slides
+    pptxTheme: 'dark',                                     // companion deck theme
+    fillMode: 'black',                                     // unused but keeps shape consistent
+    progress: 0, progressMsg: '', outputPath: null, outputPaths: null, errorMsg: null,
+    warnings: [],                                          // captured during conversion
+  }));
+
+  const newItems = [...pdfItems, ...docxItems, ...pptxItems];
   state.queue.push(...newItems);
 
-  if (!state.selectedId && newItems.length > 0) {
+  // Always make the freshly-dropped file the active selection so the user
+  // is configuring the new item, not a stale completed one. Picks the first
+  // of a multi-drop so the queue's natural top-to-bottom order is honoured.
+  if (newItems.length > 0) {
     state.selectedId = newItems[0].id;
   }
 
   renderQueue();
+
+  // Bring the newly selected item into view inside the scrollable queue list
+  const newEl = document.querySelector(`.queue-item[data-id="${state.selectedId}"]`);
+  if (newEl) newEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   _dropLabelIdx++;
   updateDzLabel();
   updateConvertButton();
@@ -414,6 +459,19 @@ async function addFiles(rawPaths) {
         item.splitChoices = [];
       }
 
+      item.status = 'waiting';
+      refreshQueueItem(item);
+      if (state.selectedId === item.id) updateSidebar();
+    }),
+    ...pptxItems.map(async (item) => {
+      const info = await window.slidefluid.getPptxInfo(item.path);
+      if (info.ok) {
+        item.slideCount       = info.slideCount;
+        item.totalNotesChars  = info.totalNotesChars;
+        item.slidesWithNotes  = info.slidesWithNotes;
+        item.totalBuilds      = info.totalBuilds;
+        item.slidesWithBuilds = info.slidesWithBuilds;
+      }
       item.status = 'waiting';
       refreshQueueItem(item);
       if (state.selectedId === item.id) updateSidebar();
@@ -693,11 +751,12 @@ function buildQueueItemEl(item) {
   el.dataset.id = item.id;
   el.setAttribute('role', 'listitem');
 
+  const hasWarnings = item.status === 'done' && item.warnings && item.warnings.length > 0;
   const statusLabel = {
     loading:    'Loading',
     waiting:    'Waiting',
     converting: 'Converting',
-    done:       'Done',
+    done:       hasWarnings ? `Done ⚠ ${item.warnings.length}` : 'Done',
     error:      'Error',
   }[item.status] || item.status;
 
@@ -705,6 +764,10 @@ function buildQueueItemEl(item) {
   if (item.fileType === 'docx') {
     if (item.slideCount != null) metaParts.push(`${item.slideCount} slide${item.slideCount !== 1 ? 's' : ''}`);
     if (item.wordCount  != null) metaParts.push(`${item.wordCount} words`);
+  } else if (item.fileType === 'pptx') {
+    if (item.slideCount != null)      metaParts.push(`${item.slideCount} slide${item.slideCount !== 1 ? 's' : ''}`);
+    if (item.totalNotesChars != null) metaParts.push(`${item.totalNotesChars} notes chars`);
+    if (item.totalBuilds)             metaParts.push(`${item.totalBuilds} build${item.totalBuilds !== 1 ? 's' : ''}`);
   } else {
     if (item.pageCount != null) metaParts.push(`${item.pageCount} page${item.pageCount !== 1 ? 's' : ''}`);
     if (item.ar        != null) metaParts.push(arLabel(item.ar));
@@ -720,13 +783,18 @@ function buildQueueItemEl(item) {
     : '';
 
   el.innerHTML = `
-    <div class="qi-icon">${item.fileType === 'docx' ? (item.name.split('.').pop().toUpperCase() || 'DOC') : 'PDF'}</div>
+    <div class="qi-icon">${
+      item.fileType === 'pptx' ? 'PPT' :
+      item.fileType === 'docx' ? (item.name.split('.').pop().toUpperCase() || 'DOC') :
+      'PDF'
+    }</div>
     <div class="qi-body">
       <div class="qi-name" title="${escHtml(item.path)}">${escHtml(item.name)}</div>
       <div class="qi-meta">${escHtml(displayMeta)}</div>
       ${progressBar}
     </div>
     <div class="qi-badge status-${item.status}">${escHtml(statusLabel)}</div>
+    ${item.status === 'done' ? '<button class="qi-details" title="View conversion details" aria-label="Details">ⓘ</button>' : ''}
     <button class="qi-remove" title="Remove from queue" aria-label="Remove">✕</button>
   `;
 
@@ -735,7 +803,353 @@ function buildQueueItemEl(item) {
     e.stopPropagation();
     removeQueueItem(item.id);
   });
+  if (item.status === 'error') {
+    const badge = el.querySelector('.qi-badge.status-error');
+    if (badge) {
+      badge.title = 'Open the app log to see what went wrong';
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        window.slidefluid.openLogFile();
+      });
+    }
+  }
+  if (hasWarnings) {
+    const badge = el.querySelector('.qi-badge.status-done');
+    if (badge) {
+      badge.classList.add('has-warnings');
+      const n = item.warnings.length;
+      badge.title = `${n} warning${n !== 1 ? 's' : ''} — click to view details`;
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showSummaryModal(item);
+      });
+    }
+  }
+  const detailsBtn = el.querySelector('.qi-details');
+  if (detailsBtn) {
+    detailsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showSummaryModal(item);
+    });
+  }
   return el;
+}
+
+// Conversion-details modal — unified "what just happened?" pane.
+// Click the ⓘ icon next to a done item (or the amber "Done ⚠ N" badge)
+// to open. Shows: output file(s), mode used, per-source-slide edits, and
+// any warnings emitted by the backend.
+function showSummaryModal(item) {
+  const overlay = document.getElementById('summary-overlay');
+  const body    = document.getElementById('summary-body');
+  const titleEl = document.getElementById('summary-title');
+  if (!overlay || !body) return;
+
+  titleEl.textContent = `Conversion details — ${item.name}`;
+  body.innerHTML = _renderSummaryBody(item);
+  overlay.classList.remove('hidden');
+}
+
+function _renderSummaryBody(item) {
+  const sections = [];
+
+  // ── Output section ────────────────────────────────────────────────────
+  const outRows = [];
+  const mode = item.pptxModeUsed || item.pptxMode;
+  const modeLabel = { teleprompter: 'Teleprompter', split: 'Split Deck', companion: 'Companion' }[mode] || mode;
+  if (modeLabel) outRows.push(_summaryMetaRow('Mode', modeLabel));
+
+  const outputs = item.outputPaths && item.outputPaths.length
+    ? item.outputPaths
+    : (item.outputPath ? [item.outputPath] : []);
+  outputs.forEach((p, i) => {
+    const label = outputs.length > 1
+      ? (p.endsWith('_companion.pptx') ? 'Companion' : 'Audience')
+      : 'Output';
+    outRows.push(_summaryMetaRow(label, p));
+  });
+
+  if (outRows.length) {
+    sections.push(`
+      <div class="summary-section">
+        <div class="summary-section-label">Output</div>
+        ${outRows.join('')}
+      </div>
+    `);
+  }
+
+  // ── Edits section ─────────────────────────────────────────────────────
+  const edits = item.edits || [];
+  if (edits.length) {
+    sections.push(`
+      <div class="summary-section">
+        <div class="summary-section-label">Edits to source slides — ${edits.length} slide${edits.length !== 1 ? 's' : ''} affected</div>
+        ${edits.map(_summaryEditRow).join('')}
+      </div>
+    `);
+  }
+
+  // ── Warnings section ──────────────────────────────────────────────────
+  const warnings = item.warnings || [];
+  if (warnings.length) {
+    sections.push(`
+      <div class="summary-section">
+        <div class="summary-section-label">Warnings — ${warnings.length}</div>
+        ${warnings.map(w => `
+          <div class="summary-warning-row">
+            <span class="summary-warning-icon">⚠</span>
+            <span class="summary-warning-text">${escHtml(w)}</span>
+          </div>
+        `).join('')}
+      </div>
+    `);
+  }
+
+  if (!edits.length && !warnings.length) {
+    sections.push('<div class="summary-empty-state">Clean conversion — no edits or warnings to report.</div>');
+  }
+
+  return sections.join('');
+}
+
+function _summaryMetaRow(label, value) {
+  return `
+    <div class="summary-meta-row">
+      <span class="summary-meta-label">${escHtml(label)}</span>
+      <span class="summary-meta-value">${escHtml(value)}</span>
+    </div>
+  `;
+}
+
+function _summaryEditRow(edit) {
+  const kind = edit.kind || 'edited';
+  let icon = '✱';
+  let text = '';
+  switch (kind) {
+    case 'duplicated':
+      icon = '⧉';
+      text = `<span class="summary-edit-slide">Slide ${edit.src_slide}</span> → split into ${edit.chunk_count} slides (${(edit.result_slides || []).join(', ')})`;
+      break;
+    case 'merged_uncloneable':
+      icon = '⚠';
+      text = `<span class="summary-edit-slide">Slide ${edit.src_slide}</span> → notes too long but slide contains an embedded chart/diagram/object that can't be cloned. All chunks merged into one notes pane (slide ${(edit.result_slides || [edit.src_slide])[0]}).`;
+      break;
+    case 'chunked':
+      icon = '⊟';
+      text = `<span class="summary-edit-slide">Slide ${edit.src_slide}</span> → notes split into ${edit.chunk_count} sections in the teleprompter output.`;
+      break;
+    case 'empty':
+      icon = '·';
+      text = `<span class="summary-edit-slide">Slide ${edit.src_slide}</span> → no speaker notes; placed <code>[no notes]</code> placeholder.`;
+      break;
+    default:
+      text = `Slide ${edit.src_slide} — ${escHtml(kind)}`;
+  }
+  return `
+    <div class="summary-edit-row">
+      <span class="summary-edit-icon kind-${kind}">${icon}</span>
+      <span class="summary-edit-text">${text}</span>
+    </div>
+  `;
+}
+
+function _setupSummaryModal() {
+  const overlay = document.getElementById('summary-overlay');
+  if (!overlay) return;
+  const close = () => overlay.classList.add('hidden');
+  document.getElementById('btn-summary-close').addEventListener('click', close);
+  document.getElementById('btn-summary-done').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overlay.classList.contains('hidden')) close();
+  });
+}
+
+// PPTX Split Settings popout — threshold input + slide-numbers toggle +
+// override-marker hint. Threshold changes apply to ALL pptx items in the
+// queue (consistent batch behavior) and persist to global settings so
+// future drops pick up the user's preferred value. Slide-numbers toggle
+// is per-item — it backs `pptxIncludeHeaders` for teleprompter mode and
+// `pptxIncludeSlideNumbers` for split/companion modes.
+
+let _pptxOptionsItem = null;
+
+function _pptxSlideNumberValue(item) {
+  return item.pptxMode === 'teleprompter'
+    ? !!item.pptxIncludeHeaders
+    : !!item.pptxIncludeSlideNumbers;
+}
+function _pptxSetSlideNumberValue(item, on) {
+  if (item.pptxMode === 'teleprompter') item.pptxIncludeHeaders = on;
+  else                                  item.pptxIncludeSlideNumbers = on;
+}
+function _pptxSlideNumberHint(mode) {
+  switch (mode) {
+    case 'teleprompter':
+      return 'Adds <code>[Slide N]</code> before each block in the .txt output.';
+    case 'split':
+      return 'Adds <code>[Slide N — part k/total]</code> to each chunk\'s speaker notes.';
+    case 'companion':
+      return 'Adds <code>Slide N</code> as the heading on each companion slide and <code>[Slide N — part k/total]</code> to audience-deck notes.';
+    default:
+      return '';
+  }
+}
+
+function _openPptxOptions(item) {
+  const overlay = document.getElementById('pptx-options-overlay');
+  const input   = document.getElementById('pptx-threshold-input');
+  const toggle  = document.getElementById('pptx-slide-numbers-toggle');
+  const hint    = document.getElementById('pptx-slide-numbers-hint');
+  const applyRow   = document.getElementById('pptx-options-apply-all');
+  const applyCount = document.getElementById('pptx-apply-all-count');
+  const applyBtn   = document.getElementById('btn-pptx-apply-all');
+  if (!overlay || !input) return;
+
+  _pptxOptionsItem = item;
+  input.value = item.pptxThreshold || state.settings.pptxThreshold || 12;
+  if (toggle) toggle.checked = _pptxSlideNumberValue(item);
+  if (hint)   hint.innerHTML  = _pptxSlideNumberHint(item.pptxMode);
+
+  // Apply-to-all row: only show if there are other pptx items to propagate to
+  if (applyRow && applyCount && applyBtn) {
+    const totalPptx = state.queue.filter(i => i.fileType === 'pptx').length;
+    if (totalPptx >= 2) {
+      applyCount.textContent = totalPptx;
+      applyBtn.classList.remove('applied');
+      applyBtn.disabled = false;
+      applyBtn.firstChild && (applyBtn.innerHTML = `Apply this configuration to all <span id="pptx-apply-all-count">${totalPptx}</span> pptx items in the queue`);
+      applyRow.classList.remove('hidden');
+    } else {
+      applyRow.classList.add('hidden');
+    }
+  }
+
+  overlay.classList.remove('hidden');
+  setTimeout(() => input.focus(), 50);
+}
+
+// Copy mode + headers/slide-numbers + theme from `source` to every other pptx
+// item in the queue. Threshold is already global so it doesn't need to be
+// propagated. Returns the number of items that actually changed.
+function _applyPptxConfigToAll(source) {
+  let changedCount = 0;
+  for (const item of state.queue) {
+    if (item.fileType !== 'pptx' || item.id === source.id) continue;
+    let changed = false;
+    if (item.pptxMode                !== source.pptxMode)                { item.pptxMode = source.pptxMode; changed = true; }
+    if (item.pptxIncludeHeaders      !== source.pptxIncludeHeaders)      { item.pptxIncludeHeaders = source.pptxIncludeHeaders; changed = true; }
+    if (item.pptxIncludeSlideNumbers !== source.pptxIncludeSlideNumbers) { item.pptxIncludeSlideNumbers = source.pptxIncludeSlideNumbers; changed = true; }
+    if (item.pptxTheme               !== source.pptxTheme)               { item.pptxTheme = source.pptxTheme; changed = true; }
+    if (changed) {
+      // Reset to waiting and re-render. _resetItemForRequeue is conservative
+      // and only resets if status is done/error; for waiting items the field
+      // updates suffice — just refresh the row.
+      _resetItemForRequeue(item);
+      refreshQueueItem(item);
+      changedCount++;
+    }
+  }
+  // Re-render the sidebar for whichever item is selected (its mode chips may
+  // have shifted if its config got overwritten).
+  const sel = state.queue.find(i => i.id === state.selectedId);
+  if (sel) updateSidebar();
+  return changedCount;
+}
+
+function _setupPptxOptions() {
+  const overlay = document.getElementById('pptx-options-overlay');
+  if (!overlay) return;
+  const input  = document.getElementById('pptx-threshold-input');
+  const toggle = document.getElementById('pptx-slide-numbers-toggle');
+
+  const close = () => { overlay.classList.add('hidden'); _pptxOptionsItem = null; };
+  document.getElementById('btn-pptx-options-close').addEventListener('click', close);
+  document.getElementById('btn-pptx-options-done').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overlay.classList.contains('hidden')) close();
+  });
+
+  // Threshold — debounced commit, applies to all pptx items + saves global
+  let _thresholdTimer = null;
+  function commitThreshold() {
+    const raw = parseInt(input.value, 10);
+    if (isNaN(raw)) return;
+    const value = Math.max(5, Math.min(50, raw));
+    if (value !== raw) input.value = value;
+
+    state.settings.pptxThreshold = value;
+    window.slidefluid.setSetting('pptxThreshold', value);
+
+    for (const i of state.queue) {
+      if (i.fileType === 'pptx' && i.pptxThreshold !== value) {
+        i.pptxThreshold = value;
+        _resetItemForRequeue(i);
+      }
+    }
+    const sel = state.queue.find(i => i.id === state.selectedId);
+    if (sel && sel.fileType === 'pptx') renderFileDetails(sel);
+  }
+  input.addEventListener('input', () => {
+    clearTimeout(_thresholdTimer);
+    _thresholdTimer = setTimeout(commitThreshold, 250);
+  });
+  input.addEventListener('blur', commitThreshold);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { commitThreshold(); close(); }
+  });
+
+  // Slide-numbers toggle — per-item, backs the right field per current mode
+  if (toggle) {
+    toggle.addEventListener('change', () => {
+      const item = _pptxOptionsItem;
+      if (!item) return;
+      _pptxSetSlideNumberValue(item, toggle.checked);
+      _resetItemForRequeue(item);
+    });
+  }
+
+  // Apply-to-all — copies the source item's mode + toggles + theme to every
+  // other pptx item in the queue. Visible only when ≥2 pptx items exist.
+  const applyBtn = document.getElementById('btn-pptx-apply-all');
+  if (applyBtn) {
+    applyBtn.addEventListener('click', () => {
+      const item = _pptxOptionsItem;
+      if (!item) return;
+      const n = _applyPptxConfigToAll(item);
+      applyBtn.classList.add('applied');
+      applyBtn.disabled = true;
+      applyBtn.textContent = `Applied to ${n} item${n !== 1 ? 's' : ''}`;
+      setTimeout(close, 900);
+    });
+  }
+}
+
+// Companion-mode completion banner — surfaces at the top of the queue area
+// after any batch that produced an audience+companion deck pair. Reminds the
+// presenter the pair must be loaded together on separate machines.
+
+function _showCompanionBanner(filenames) {
+  const banner = document.getElementById('companion-banner');
+  const textEl = document.getElementById('companion-banner-text');
+  if (!banner || !textEl) return;
+
+  const n = filenames.length;
+  if (n === 1) {
+    textEl.innerHTML = `Two decks ready for <strong>${escHtml(filenames[0])}</strong> — load <strong>audience</strong> on the projector, <strong>companion</strong> on the confidence monitor. Both advance in sync.`;
+  } else {
+    textEl.innerHTML = `<strong>${n}</strong> deck pairs ready — load each <strong>audience</strong> on its projector and matching <strong>companion</strong> on its confidence monitor. Each pair advances in sync.`;
+  }
+  banner.classList.remove('hidden');
+}
+
+function _setupCompanionBanner() {
+  const banner = document.getElementById('companion-banner');
+  if (!banner) return;
+  document.getElementById('btn-companion-banner-dismiss').addEventListener('click', () => {
+    banner.classList.add('hidden');
+  });
 }
 
 function removeQueueItem(id) {
@@ -792,7 +1206,7 @@ function updateSidebar() {
   renderFileDetails(item);
 }
 
-// 6.12 — Dispatch on fileType so DOCX items can have different sidebar controls in Phase 8
+// 6.12 — Dispatch on fileType so each input type can have its own sidebar controls
 function renderSidebarControls(item) {
   switch (item ? item.fileType : null) {
     case 'pdf':
@@ -804,6 +1218,10 @@ function renderSidebarControls(item) {
       renderArBadge(null);
       renderDocxInfo(item);
       renderSlideThemeSelector(item);
+      break;
+    case 'pptx':
+      renderPptxInfo(item);
+      renderPptxModeSelector(item);
       break;
     default:
       renderArBadge(null);
@@ -890,6 +1308,110 @@ function renderSlideThemeSelector(item) {
   });
 }
 
+// --- PPTX sidebar (replaces ar-badge + fill-mode-selector slots) ---
+
+function renderPptxInfo(item) {
+  const el = document.getElementById('ar-badge');
+  if (!item) { el.innerHTML = ''; return; }
+
+  if (item.status === 'loading' || item.slideCount == null) {
+    el.innerHTML = '<div class="ar-badge ar-neutral">Analysing…</div>';
+    return;
+  }
+
+  const slide = item.slideCount === 1 ? '1 slide' : `${item.slideCount} slides`;
+  const notes = item.totalNotesChars != null ? ` · ${item.totalNotesChars} notes chars` : '';
+  const builds = item.totalBuilds ? ` · ${item.totalBuilds} build${item.totalBuilds !== 1 ? 's' : ''}` : '';
+  el.innerHTML = `<div class="ar-badge ar-ok">PPTX — ${slide}${notes}${builds}</div>`;
+}
+
+function renderPptxModeSelector(item) {
+  const el = document.getElementById('fill-mode-selector');
+  if (!item) { el.innerHTML = ''; return; }
+
+  const modes = [
+    { value: 'teleprompter', label: 'Teleprompter' },
+    { value: 'split',        label: 'Split Deck'   },
+    { value: 'companion',    label: 'Companion'    },
+  ];
+  const themes = [
+    { value: 'light', label: 'Light' },
+    { value: 'dark',  label: 'Dark'  },
+  ];
+  const current = item.pptxMode || 'teleprompter';
+
+  // Inline-only contextual control: Companion theme (visual choice, faster
+  // inline than buried in the popout). Slide-number / header toggles moved
+  // into the Split Settings popout — they're settings, not skin choices.
+  let contextual = '';
+  if (current === 'companion') {
+    const t = item.pptxTheme || 'dark';
+    contextual = `
+      <div class="fill-mode-label" style="margin-top:10px">Companion theme</div>
+      <div class="fill-mode-buttons">
+        ${themes.map(th => `
+          <button class="fill-btn${t === th.value ? ' active' : ''}" data-pptx-theme="${th.value}">${escHtml(th.label)}</button>
+        `).join('')}
+      </div>`;
+  }
+
+  el.innerHTML = `
+    <div class="fill-mode-label">Mode</div>
+    <div class="fill-mode-buttons">
+      ${modes.map(m => `
+        <button class="fill-btn${current === m.value ? ' active' : ''}" data-pptx-mode="${m.value}">${escHtml(m.label)}</button>
+      `).join('')}
+    </div>
+    ${contextual}
+    <button class="pptx-options-btn" data-pptx-options>⚙ Split settings</button>
+  `;
+
+  // Mode buttons
+  el.querySelectorAll('.fill-btn[data-pptx-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      item.pptxMode = btn.dataset.pptxMode;
+      _resetItemForRequeue(item);
+      renderPptxModeSelector(item);   // re-render to swap contextual controls
+      renderFileDetails(item);        // mode label in file details
+      drawPreview(item);
+      updateConvertButton();          // label changes per mode (TXT / PPTX / Pair)
+    });
+  });
+
+  // Theme buttons (companion only)
+  el.querySelectorAll('.fill-btn[data-pptx-theme]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      item.pptxTheme = btn.dataset.pptxTheme;
+      el.querySelectorAll('.fill-btn[data-pptx-theme]').forEach(b =>
+        b.classList.toggle('active', b.dataset.pptxTheme === item.pptxTheme)
+      );
+      _resetItemForRequeue(item);
+      drawPreview(item);
+    });
+  });
+
+  // Split settings popout
+  const optsBtn = el.querySelector('[data-pptx-options]');
+  if (optsBtn) {
+    optsBtn.addEventListener('click', () => _openPptxOptions(item));
+  }
+}
+
+// Re-queue a done/errored item when settings change (matches the docx/pdf pattern)
+function _resetItemForRequeue(item) {
+  if (item.status === 'done' || item.status === 'error') {
+    item.status = 'waiting';
+    item.progress = 0;
+    item.outputPath = null;
+    item.outputPaths = null;
+    item.errorMsg = null;
+    item.edits = [];
+    item.warnings = [];
+    refreshQueueItem(item);
+    updateConvertButton();
+  }
+}
+
 // --- Preview canvas ---
 
 // 6.13 — Dispatch on fileType and previewMode; only 'pdf'+'graphical' does real work now
@@ -906,6 +1428,12 @@ function drawPreview(item) {
 
   if (fileType === 'docx') {
     _drawPreviewDocx(ctx, W, H, item);
+    _resetPreviewButton(item);
+    return;
+  }
+
+  if (fileType === 'pptx') {
+    _drawPreviewPptx(ctx, W, H, item);
     _resetPreviewButton(item);
     return;
   }
@@ -1083,6 +1611,85 @@ function _drawPreviewDocx(ctx, W, H, item) {
     if (lineY + lineH > pad + slideH - 12) break;
     ctx.fillRect(lineX, lineY, lw, 5);
     lineY += lineH;
+  }
+}
+
+function _drawPreviewPptx(ctx, W, H, item) {
+  const mode = (item && item.pptxMode) || 'teleprompter';
+  const pad = 10;
+
+  // Canvas background
+  ctx.fillStyle = '#0E1420';
+  ctx.fillRect(0, 0, W, H);
+
+  if (mode === 'teleprompter') {
+    // Big text-only document look: full-frame off-white with horizontal lines
+    ctx.fillStyle = '#1A1F2E';
+    ctx.fillRect(pad, pad, W - pad * 2, H - pad * 2);
+    ctx.fillStyle = '#3DFFCC';
+    ctx.font = 'bold 9px system-ui';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('TELEPROMPTER', pad + 10, pad + 10);
+    ctx.fillStyle = '#5A6480';
+    for (let i = 0; i < 9; i++) {
+      const y = pad + 28 + i * 12;
+      if (y > H - pad - 8) break;
+      const wpx = (W - pad * 2 - 24) * (i % 3 === 2 ? 0.55 : 0.92);
+      ctx.fillRect(pad + 12, y, wpx, 4);
+    }
+  } else if (mode === 'split') {
+    // Two slide thumbs side by side with a small "+1" indicator
+    const halfW = (W - pad * 2 - 8) / 2;
+    const slideH = H - pad * 2;
+    // First slide
+    ctx.fillStyle = '#1B2C4A';
+    ctx.fillRect(pad, pad, halfW, slideH);
+    ctx.strokeStyle = '#3DFFCC';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(pad + 0.5, pad + 0.5, halfW - 1, slideH - 1);
+    // Second (duplicate)
+    ctx.fillStyle = '#1B2C4A';
+    ctx.fillRect(pad + halfW + 8, pad, halfW, slideH);
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = '#3DFFCC';
+    ctx.strokeRect(pad + halfW + 8.5, pad + 0.5, halfW - 1, slideH - 1);
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#3DFFCC';
+    ctx.font = 'bold 9px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillText('SLIDE 5a', pad + 10, pad + 14);
+    ctx.fillText('SLIDE 5b', pad + halfW + 18, pad + 14);
+  } else if (mode === 'companion') {
+    // Audience slide on left, dark notes slide on right
+    const halfW = (W - pad * 2 - 8) / 2;
+    const slideH = H - pad * 2;
+    // Audience
+    ctx.fillStyle = '#1B2C4A';
+    ctx.fillRect(pad, pad, halfW, slideH);
+    ctx.strokeStyle = '#3DFFCC';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(pad + 0.5, pad + 0.5, halfW - 1, slideH - 1);
+    ctx.fillStyle = '#3DFFCC';
+    ctx.font = 'bold 9px system-ui';
+    ctx.fillText('AUDIENCE', pad + 10, pad + 14);
+    // Companion (dark/light per setting)
+    const dark = (item && item.pptxTheme) !== 'light';
+    ctx.fillStyle = dark ? '#000000' : '#FFFFFF';
+    ctx.fillRect(pad + halfW + 8, pad, halfW, slideH);
+    ctx.strokeStyle = '#3DFFCC';
+    ctx.strokeRect(pad + halfW + 8.5, pad + 0.5, halfW - 1, slideH - 1);
+    ctx.fillStyle = dark ? '#FFFFFF' : '#222222';
+    ctx.font = 'bold 9px system-ui';
+    ctx.fillText('COMPANION', pad + halfW + 18, pad + 14);
+    ctx.fillStyle = dark ? '#888888' : '#666666';
+    ctx.font = '8px system-ui';
+    for (let i = 0; i < 5; i++) {
+      const y = pad + 30 + i * 9;
+      if (y > H - pad - 8) break;
+      const wpx = (halfW - 20) * (i === 4 ? 0.5 : 0.85);
+      ctx.fillRect(pad + halfW + 18, y, wpx, 3);
+    }
   }
 }
 
@@ -1270,6 +1877,14 @@ function renderFileDetails(item) {
   if (item.fileType === 'docx') {
     if (item.slideCount != null) rows.push(detailRow('Slides', String(item.slideCount)));
     if (item.wordCount  != null) rows.push(detailRow('Words',  String(item.wordCount)));
+  } else if (item.fileType === 'pptx') {
+    if (item.slideCount       != null) rows.push(detailRow('Slides', String(item.slideCount)));
+    if (item.slidesWithNotes  != null) rows.push(detailRow('With notes', `${item.slidesWithNotes} / ${item.slideCount}`));
+    if (item.totalNotesChars  != null) rows.push(detailRow('Notes', `${item.totalNotesChars} chars`));
+    if (item.totalBuilds)              rows.push(detailRow('Builds', `${item.totalBuilds} on ${item.slidesWithBuilds} slide${item.slidesWithBuilds !== 1 ? 's' : ''}`));
+    const modeLabel = { teleprompter: 'Teleprompter', split: 'Split Deck', companion: 'Companion' }[item.pptxMode] || item.pptxMode;
+    rows.push(detailRow('Mode', modeLabel));
+    rows.push(detailRow('Max lines', `${item.pptxThreshold} per chunk`));
   } else {
     if (item.pageCount != null) {
       rows.push(detailRow('Pages', String(item.pageCount)));
@@ -1345,6 +1960,29 @@ function setupConvertButton() {
   document.getElementById('btn-convert').addEventListener('click', handleConvertClick);
 }
 
+function _convertButtonLabel() {
+  // Pro-skin label that contextualizes by what's about to be produced.
+  // Mixed outputs \u2192 generic "Convert Files".
+  const waiting = state.queue.filter(i => i.status === 'waiting');
+  if (waiting.length === 0) return 'Convert to PPTX';
+
+  const outs = new Set();
+  for (const item of waiting) {
+    if (item.fileType === 'pptx') {
+      const m = item.pptxMode || 'teleprompter';
+      if      (m === 'teleprompter') outs.add('TXT');
+      else if (m === 'companion')    outs.add('PAIR');
+      else                           outs.add('PPTX');
+    } else {
+      outs.add('PPTX');
+    }
+  }
+  if (outs.size > 1) return 'Convert Files';
+  if (outs.has('TXT'))  return 'Convert to TXT';
+  if (outs.has('PAIR')) return 'Convert to Deck Pair';
+  return 'Convert to PPTX';
+}
+
 function updateConvertButton() {
   updateClearDoneButton();
   const btn = document.getElementById('btn-convert');
@@ -1352,14 +1990,17 @@ function updateConvertButton() {
   const allSettled   = state.queue.length > 0 &&
                        state.queue.every(i => i.status === 'done' || i.status === 'error');
 
+  const proLabel = _convertButtonLabel();
+  const funLabel = 'Set them free \u2192';
+
   if (state.isConverting) {
     setState(btn, 'converting', 'Cancel', false);
   } else if (allSettled) {
     setState(btn, 'complete', skinText('Open Output Folder', "They're free. Open folder?"), false);
   } else if (waitingItems.length > 0 && state.outputDir) {
-    setState(btn, 'ready', skinText('Convert to PPTX', 'Set them free \u2192'), false);
+    setState(btn, 'ready', skinText(proLabel, funLabel), false);
   } else {
-    setState(btn, 'idle', skinText('Convert to PPTX', 'Set them free \u2192'), true);
+    setState(btn, 'idle', skinText(proLabel, funLabel), true);
   }
 }
 
@@ -1417,38 +2058,55 @@ async function beginConversion() {
   const waitingItems = state.queue.filter(i => i.status === 'waiting');
   if (!waitingItems.length || !state.outputDir) return;
 
+  // Hide any lingering companion banner from a previous batch
+  const banner = document.getElementById('companion-banner');
+  if (banner) banner.classList.add('hidden');
+
   const suffix = state.settings.filenameSuffix || '';
 
-  // Overwrite check — one per file; track 'overwrite_all'/'skip_all' to avoid
-  // repeated dialogs when the user has already given a blanket answer.
+  // Overwrite check — one per output path; track 'overwrite_all'/'skip_all'
+  // so blanket decisions don't pop repeated dialogs. PPTX items in companion
+  // mode produce TWO outputs (audience + companion); both checked, single skip
+  // skips the whole item.
   const toConvert = [];
   let bulkAction = null; // 'overwrite' | 'skip' once user picks an "All" option
 
   for (const item of waitingItems) {
-    const stem = item.name.replace(/\.(pdf|docx|txt)$/i, '');
-    let outPath = `${state.outputDir}/${stem}${suffix}.pptx`;
+    const stem = item.name.replace(/\.(pdf|docx|txt|pptx)$/i, '');
 
-    let decision;
-    if (bulkAction) {
-      decision = bulkAction;
+    // Compute expected output paths for this item
+    let outPaths;
+    if (item.fileType === 'pptx') {
+      const mode = item.pptxMode || 'teleprompter';
+      if (mode === 'teleprompter') {
+        outPaths = [`${state.outputDir}/${stem}_notes${suffix}.txt`];
+      } else if (mode === 'split') {
+        outPaths = [`${state.outputDir}/${stem}_split${suffix}.pptx`];
+      } else { // companion
+        outPaths = [
+          `${state.outputDir}/${stem}_audience${suffix}.pptx`,
+          `${state.outputDir}/${stem}_companion${suffix}.pptx`,
+        ];
+      }
     } else {
-      decision = await window.slidefluid.checkOverwrite(outPath);
+      outPaths = [`${state.outputDir}/${stem}${suffix}.pptx`];
     }
 
-    if (decision === 'cancel') return;
-    if (decision === 'skip') continue;
-    if (decision === 'skip_all') { bulkAction = 'skip'; continue; }
-    if (decision === 'overwrite_all') bulkAction = 'overwrite';
+    // Run overwrite check for each output path; first decisive answer wins for this item
+    let skipItem = false;
+    for (const outPath of outPaths) {
+      let decision = bulkAction
+        ? bulkAction
+        : await window.slidefluid.checkOverwrite(outPath);
 
-    if (decision === 'rename') {
-      let n = 1;
-      let candidate;
-      do {
-        candidate = `${state.outputDir}/${stem}${suffix}_${n}.pptx`;
-        n++;
-      } while (n <= 99 && (await window.slidefluid.checkOverwrite(candidate)) !== 'ok');
-      outPath = candidate;
+      if (decision === 'cancel') return;
+      if (decision === 'skip')        { skipItem = true; break; }
+      if (decision === 'skip_all')    { bulkAction = 'skip'; skipItem = true; break; }
+      if (decision === 'overwrite_all') bulkAction = 'overwrite';
+      // 'rename' is not currently supported for multi-output pptx (companion); fall
+      // through and treat as overwrite for those. PDF/DOCX single-output works as before.
     }
+    if (skipItem) continue;
 
     toConvert.push(item);
   }
@@ -1476,18 +2134,23 @@ async function beginConversion() {
       fileType:   item.fileType,
       fillMode:   item.fileType === 'pdf'  ? (item.fillMode  || 'black') : null,
       slideTheme: item.fileType === 'docx' ? (item.slideTheme || 'light') : null,
+      pptxMode:   item.fileType === 'pptx' ? (item.pptxMode  || 'teleprompter') : null,
       status:     'pending',
       slides:     0,
       outputPath: null,
+      outputPaths: null,
+      companionSlides: null,
       errorMsg:   null,
       warnings:   [],
     })),
   };
 
-  // Group PDF items by fillMode; DOCX/TXT items by slideTheme+textAlign.
+  // Group PDF items by fillMode; DOCX/TXT items by slideTheme+textAlign;
+  // PPTX items by mode|threshold|headers|slidenums|theme.
   const groups = [];
   const seenFm = new Map();
   const seenDocx = new Map();
+  const seenPptx = new Map();
 
   for (const item of toConvert) {
     if (item.fileType === 'docx') {
@@ -1496,6 +2159,15 @@ async function beginConversion() {
       const key   = `${theme}|${align}`;
       if (!seenDocx.has(key)) { seenDocx.set(key, []); }
       seenDocx.get(key).push(item);
+    } else if (item.fileType === 'pptx') {
+      const mode = item.pptxMode || 'teleprompter';
+      const thr  = item.pptxThreshold || 500;
+      const hdr  = item.pptxIncludeHeaders !== false;
+      const sn   = !!item.pptxIncludeSlideNumbers;
+      const thm  = item.pptxTheme || 'dark';
+      const key  = `${mode}|${thr}|${hdr}|${sn}|${thm}`;
+      if (!seenPptx.has(key)) seenPptx.set(key, []);
+      seenPptx.get(key).push(item);
     } else {
       const fm = item.fillMode || 'black';
       if (!seenFm.has(fm)) { seenFm.set(fm, []); groups.push({ fillMode: fm, items: seenFm.get(fm) }); }
@@ -1505,6 +2177,20 @@ async function beginConversion() {
   for (const [key, items] of seenDocx) {
     const [slideTheme, textAlign] = key.split('|');
     groups.push({ fillMode: 'black', slideTheme, textAlign, items });
+  }
+  for (const [key, items] of seenPptx) {
+    const [mode, thr, hdr, sn, thm] = key.split('|');
+    groups.push({
+      fillMode: 'black',
+      pptxOpts: {
+        mode,
+        threshold: Number(thr),
+        includeHeaders:      hdr === 'true',
+        includeSlideNumbers: sn === 'true',
+        theme: thm,
+      },
+      items,
+    });
   }
 
   for (const group of groups) {
@@ -1531,6 +2217,7 @@ async function beginConversion() {
       textAlign: group.textAlign || 'left',
       splitChoices: groupSplitChoices,
       suffix,
+      pptxOpts: group.pptxOpts || null,
     });
 
     if (!result.ok) {
@@ -1553,6 +2240,16 @@ async function beginConversion() {
 
     if (state.settings.writeReport === true && _convReport) {
       await _writeConversionReport();
+    }
+
+    // Companion banner — fires once per batch if any pptx item finished in
+    // companion mode. Lists the affected source filenames so the user can
+    // match audience/companion pairs.
+    const companionDone = (_convReport?.entries || []).filter(
+      e => e.fileType === 'pptx' && e.pptxMode === 'companion' && e.status === 'done',
+    );
+    if (companionDone.length) {
+      _showCompanionBanner(companionDone.map(e => e.name));
     }
 
     if (state.settings.autoOpenOnComplete && state.outputDir) {
@@ -1664,6 +2361,8 @@ function handleConversionMessage(msg) {
         item.status = 'converting';
         item.progress = 0;
         item.progressMsg = '';
+        item.warnings = []; // fresh run — clear prior warnings
+        item.edits = [];    // and prior edits
         refreshQueueItem(item);
         if (state.selectedId === item.id) updateSidebar();
       }
@@ -1706,12 +2405,21 @@ function handleConversionMessage(msg) {
         item.status = 'done';
         item.progress = 1;
         item.outputPath = msg.output;
+        if (Array.isArray(msg.outputs)) item.outputPaths = msg.outputs;
+        if (Array.isArray(msg.edits))   item.edits = msg.edits;
+        if (msg.pptx_mode)              item.pptxModeUsed = msg.pptx_mode;
         item.progressMsg = '';
         refreshQueueItem(item);
         if (state.selectedId === item.id) updateSidebar();
       }
       const rDone = _convReport?.entries.find(e => e.path === msg.file);
-      if (rDone) { rDone.status = 'done'; rDone.slides = msg.slides || 0; rDone.outputPath = msg.output; }
+      if (rDone) {
+        rDone.status = 'done';
+        rDone.slides = msg.slides || 0;
+        rDone.outputPath = msg.output;
+        if (Array.isArray(msg.outputs)) rDone.outputPaths = msg.outputs;
+        if (msg.companion_slides != null) rDone.companionSlides = msg.companion_slides;
+      }
       break;
     }
 
@@ -1756,7 +2464,9 @@ function handleConversionMessage(msg) {
     case 'warn': {
       const item = state.queue.find(i => i.path === msg.file);
       if (item) {
-        item.progressMsg = msg.message;
+        item.warnings = item.warnings || [];
+        item.warnings.push(msg.message);
+        item.progressMsg = msg.message; // brief flash in progress meta
         refreshQueueItem(item);
       }
       const rWarn = _convReport?.entries.find(e => e.path === msg.file);
@@ -2172,6 +2882,17 @@ function updateSkinText() {
   updateWindowTitle();
   const btnSettings = document.getElementById('btn-settings');
   if (btnSettings) btnSettings.title = skinText('Settings', 'Options & Stuff');
+  const tagEl = document.getElementById('header-tagline');
+  if (tagEl) {
+    if (state.settings.skin === 'fun') {
+      if (!_funTaglinePicked) {
+        _funTaglinePicked = FUN_TAGLINES[Math.floor(Math.random() * FUN_TAGLINES.length)];
+      }
+      tagEl.textContent = _funTaglinePicked;
+    } else {
+      tagEl.textContent = 'Transition to greatness';
+    }
+  }
   updateDzLabel();
   updateConvertButton();
 }

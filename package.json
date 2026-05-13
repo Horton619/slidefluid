@@ -1,7 +1,7 @@
 {
   "name": "slidefluid",
-  "version": "3.1.7",
-  "description": "PDF to PPTX converter — AVSC / Visual Entropy Productions",
+  "version": "3.2.0",
+  "description": "PDF/DOCX/TXT → PPTX converter and PPTX → notes extractor — AVSC / Visual Entropy Productions",
   "main": "src/main.js",
   "scripts": {
     "start": "node node_modules/electron/cli.js .",

@@ -47,6 +47,7 @@ class SettingsStore {
       skin: 'professional',          // professional | fun
       previewMode: 'graphical',      // graphical | live  (live = PDF.js, Phase 8)
       writeReport: false,            // write a .txt conversion report to output folder (off by default)
+      pptxThreshold: 12,             // max effective lines per chunk for splitting speaker notes
     };
   }
 
@@ -182,7 +183,7 @@ function resolvePopplerPath() {
 // ---------------------------------------------------------------------------
 
 class ConversionJob {
-  constructor({ files, outputDir, dpi, fillMode, suffix, overwrite, win, slideTheme, textAlign, splitChoices }) {
+  constructor({ files, outputDir, dpi, fillMode, suffix, overwrite, win, slideTheme, textAlign, splitChoices, pptxOpts }) {
     this.files = files;
     this.outputDir = outputDir;
     this.dpi = dpi;
@@ -193,6 +194,7 @@ class ConversionJob {
     this.slideTheme = slideTheme || 'light';
     this.textAlign = textAlign || 'left';
     this.splitChoices = splitChoices || [];
+    this.pptxOpts = pptxOpts || null;
     this.proc = null;
     this.cancelled = false;
   }
@@ -213,6 +215,13 @@ class ConversionJob {
 
     if (this.splitChoices.length > 0) {
       scriptArgs.push('--split-choices', JSON.stringify(this.splitChoices));
+    }
+    if (this.pptxOpts) {
+      scriptArgs.push('--pptx-mode', this.pptxOpts.mode || 'teleprompter');
+      scriptArgs.push('--pptx-threshold', String(this.pptxOpts.threshold ?? 12));
+      scriptArgs.push('--pptx-include-headers', this.pptxOpts.includeHeaders === false ? 'no' : 'yes');
+      scriptArgs.push('--pptx-slide-numbers', this.pptxOpts.includeSlideNumbers ? 'yes' : 'no');
+      scriptArgs.push('--pptx-theme', this.pptxOpts.theme || 'dark');
     }
     if (this.suffix) scriptArgs.push('--suffix', this.suffix);
     if (popplerPath) scriptArgs.push('--poppler-path', popplerPath);
@@ -288,6 +297,12 @@ class ConversionJob {
   }
 
   _handleMessage(msg) {
+    // Mirror error/warn IPC messages into the app log for postmortem diagnosis
+    if (msg.type === 'error') {
+      log('error', `[backend error] ${msg.file || ''}: ${msg.message || ''}`);
+    } else if (msg.type === 'warn') {
+      log('warn', `[backend warn] ${msg.file || ''}: ${msg.message || ''}`);
+    }
     // Forward all IPC messages straight to the renderer
     this._send('conversion:message', msg);
   }
@@ -536,10 +551,11 @@ ipcMain.handle('dialog:openFiles', async () => {
     title: 'Select files to convert',
     properties: ['openFile', 'multiSelections'],
     filters: [
-      { name: 'Supported Files', extensions: ['pdf', 'docx', 'txt'] },
+      { name: 'Supported Files', extensions: ['pdf', 'docx', 'txt', 'pptx'] },
       { name: 'PDF Files',       extensions: ['pdf'] },
       { name: 'Word Documents',  extensions: ['docx'] },
       { name: 'Text Files',      extensions: ['txt'] },
+      { name: 'PowerPoint',      extensions: ['pptx'] },
     ],
   });
   return result.canceled ? [] : result.filePaths;
@@ -583,6 +599,7 @@ ipcMain.handle('conversion:start', async (event, payload) => {
     slideTheme,
     textAlign,
     splitChoices,
+    pptxOpts,
   } = payload;
 
   // Validate output dir writable before spawning
@@ -602,6 +619,7 @@ ipcMain.handle('conversion:start', async (event, payload) => {
     slideTheme: slideTheme || 'light',
     textAlign: textAlign || 'left',
     splitChoices: splitChoices || [],
+    pptxOpts: pptxOpts || null,
   });
 
   currentJob.start();
@@ -720,7 +738,7 @@ ipcMain.handle('pdf:info', async (event, filePath) => {
 });
 
 ipcMain.handle('pdf:scan', async (event, itemPaths) => {
-  const SUPPORTED_EXTS = /\.(pdf|docx|txt)$/i;
+  const SUPPORTED_EXTS = /\.(pdf|docx|txt|pptx)$/i;
 
   function scanDir(dir) {
     const results = [];
@@ -779,6 +797,44 @@ ipcMain.handle('docx:info', async (event, filePath) => {
         } catch (_) {}
       }
       resolve({ ok: false, error: 'No docx_info response from backend' });
+    });
+    proc.on('error', (err) => resolve({ ok: false, error: err.message }));
+  });
+});
+
+ipcMain.handle('pptx:info', async (event, filePath) => {
+  const backendExe = resolvePythonBackend();
+  const venvPython = path.join(__dirname, '..', 'venv', 'bin', 'python3');
+  const devPython  = fs.existsSync(venvPython) ? venvPython : 'python3';
+  const cmd  = backendExe || devPython;
+  const args = backendExe
+    ? ['--pptx-info', filePath]
+    : [resolveBackendScript(), '--pptx-info', filePath];
+
+  return new Promise((resolve) => {
+    let output = '';
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env } });
+    proc.stdout.on('data', (d) => (output += d.toString()));
+    proc.stderr.on('data', (d) => log('warn', `pptx:info stderr: ${d.toString().trim()}`));
+    proc.on('close', () => {
+      for (const line of output.split('\n')) {
+        try {
+          const msg = JSON.parse(line.trim());
+          if (msg.type === 'pptx_info') {
+            resolve({
+              ok: msg.ok,
+              slideCount: msg.slideCount,
+              totalNotesChars: msg.totalNotesChars,
+              slidesWithNotes: msg.slidesWithNotes,
+              totalBuilds: msg.totalBuilds,
+              slidesWithBuilds: msg.slidesWithBuilds,
+              message: msg.message,
+            });
+            return;
+          }
+        } catch (_) {}
+      }
+      resolve({ ok: false, error: 'No pptx_info response from backend' });
     });
     proc.on('error', (err) => resolve({ ok: false, error: err.message }));
   });

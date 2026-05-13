@@ -42,7 +42,7 @@
       </svg>
       <div class="header-wordmark">
         <h1 class="header-title">Slide<span class="header-fluid">Fluid</span></h1>
-        <div class="header-tagline">PDF to PPTX</div>
+        <div class="header-tagline" id="header-tagline">Transition to greatness</div>
       </div>
     </div>
     <button id="btn-settings" title="Settings">&#9881;</button>
@@ -52,6 +52,13 @@
 
     <!-- Left pane: drop zone + queue + progress + convert button -->
     <section class="left-pane">
+
+      <!-- Companion-mode completion banner — surfaces after a Mode C batch -->
+      <div id="companion-banner" class="companion-banner hidden" role="status" aria-live="polite">
+        <span class="cb-icon">&#10003;</span>
+        <span class="cb-text" id="companion-banner-text">Two decks ready — load <strong>audience</strong> on the projector, <strong>companion</strong> on the confidence monitor. Both advance in sync.</span>
+        <button class="cb-dismiss" id="btn-companion-banner-dismiss" aria-label="Dismiss">&#10005;</button>
+      </div>
 
       <div id="drop-zone">
         <div class="dz-label">Drop PDFs here or click to browse</div>
@@ -259,6 +266,53 @@
       <div id="overflow-slides-list" class="overflow-slides-list"></div>
       <div class="overflow-footer">
         <button class="settings-done" id="btn-overflow-apply">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PPTX Advanced Split Settings popout -->
+  <div id="pptx-options-overlay" class="settings-overlay hidden">
+    <div class="pptx-options-panel" role="dialog" aria-modal="true" aria-label="Split settings">
+      <div class="overflow-header">
+        <span class="overflow-title">Split settings</span>
+        <button class="settings-close" id="btn-pptx-options-close" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="pptx-options-body">
+        <div class="pptx-options-row">
+          <label for="pptx-threshold-input">Max lines per chunk</label>
+          <input type="number" id="pptx-threshold-input" min="5" max="50" step="1">
+        </div>
+        <div class="pptx-options-row pptx-options-row-toggle">
+          <label for="pptx-slide-numbers-toggle">Show slide numbers in output</label>
+          <input type="checkbox" id="pptx-slide-numbers-toggle">
+        </div>
+        <div class="pptx-options-toggle-hint" id="pptx-slide-numbers-hint"></div>
+        <div class="pptx-options-hint">
+          <div class="pptx-options-hint-label">Override marker</div>
+          Drop <code>---</code> on its own line inside any slide's speaker notes to force a chunk break at that point. The line threshold is ignored within a forced segment.
+        </div>
+        <div class="pptx-options-apply-all hidden" id="pptx-options-apply-all">
+          <button class="pptx-apply-all-btn" id="btn-pptx-apply-all">
+            Apply this configuration to all <span id="pptx-apply-all-count">0</span> pptx items in the queue
+          </button>
+        </div>
+      </div>
+      <div class="overflow-footer">
+        <button class="settings-done" id="btn-pptx-options-done">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Conversion Details / Summary Modal -->
+  <div id="summary-overlay" class="settings-overlay hidden">
+    <div class="summary-panel" role="dialog" aria-modal="true" aria-label="Conversion details">
+      <div class="overflow-header">
+        <span class="overflow-title" id="summary-title">Conversion details</span>
+        <button class="settings-close" id="btn-summary-close" aria-label="Close">&#10005;</button>
+      </div>
+      <div id="summary-body" class="summary-body"></div>
+      <div class="overflow-footer">
+        <button class="settings-done" id="btn-summary-done">Got it</button>
       </div>
     </div>
   </div>
