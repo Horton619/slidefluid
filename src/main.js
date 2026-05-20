@@ -1,16 +1,31 @@
 'use strict';
 
-/**
- * SlideFluid 3.0 — Electron main process
- *
- * Responsibilities:
- *   - Create and manage the BrowserWindow
- *   - Resolve paths to bundled Python backend and Poppler binaries
- *   - Spawn the Python subprocess and pipe IPC JSON back to the renderer
- *   - Handle OS-level file dialogs (open, folder picker)
- *   - Persist settings via electron-store (app preferences)
- *   - Open the output folder in Finder / Explorer
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// SlideFluid — Electron main process.
+//
+// ⚠ Read docs/IPC.md before touching ConversionJob, the IPC handlers, or
+//   any `_buildArgs` / `_handleMessage` change. The CLI flags and NDJSON
+//   message types are a three-way contract (this file + backend Python +
+//   renderer); changing one without the other two silently breaks features.
+//
+// What this file owns:
+//   • BrowserWindow lifecycle and auto-updater wiring (electron-updater).
+//   • SettingsStore (persisted JSON in userData) and Logger (rotating file).
+//   • ConversionJob — spawns the Python backend, parses NDJSON line-by-line,
+//     forwards events to the renderer on `conversion:message`.
+//   • 26 ipcMain handlers — full inventory in docs/IPC.md.
+//   • Path resolvers: resolvePythonBackend (dev vs packaged) and
+//     resolvePopplerPath (per-OS, with Windows `bin/` quirk — see PDF_FILL.md).
+//
+// Key invariants:
+//   • Every backend → renderer message goes through `_handleMessage`. Don't
+//     bypass it (e.g. with a side channel). It mirrors error/warn into the
+//     log file, which is what makes post-mortem diagnosis possible.
+//   • Settings reads/writes go through SettingsStore — never read the JSON
+//     file directly elsewhere.
+//   • Auto-updater is a no-op in dev (`!app.isPackaged`). To exercise it
+//     end-to-end you must build and run an actual packaged DMG.
+// ─────────────────────────────────────────────────────────────────────────────
 
 const {
   app,
@@ -203,6 +218,8 @@ class ConversionJob {
     const backendExe = resolvePythonBackend();
     const popplerPath = resolvePopplerPath();
 
+    // ⚠ DO NOT rename any flag below without updating the backend argparse
+    //   block AND docs/IPC.md. The flag names are a three-way contract.
     const scriptArgs = [
       '--ipc',
       '--dpi', String(this.dpi),

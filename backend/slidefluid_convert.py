@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
-"""
-SlideFluid 3.0 — PDF to PPTX conversion engine
-Standalone CLI — test this before wiring up Electron.
+# ─────────────────────────────────────────────────────────────────────────────
+# SlideFluid conversion backend — the entire Python side, one file.
+#
+# ⚠ Read the right topic doc before editing:
+#     • PDF → PPTX path .................. docs/PDF_FILL.md
+#     • DOCX / TXT / RTF → PPTX path ..... docs/DOCX_TXT.md
+#     • PPTX → notes / split / companion . docs/PPTX_PIPELINE.md
+#     • IPC schema + CLI flag contract ... docs/IPC.md
+#
+# This module is invoked as a subprocess by `src/main.js` (`ConversionJob`).
+# In `--ipc` mode it emits newline-delimited JSON to stdout, one event per
+# line; nothing else may go to stdout in that mode (a stray `print` will
+# break parsing on the renderer side — `_emit` is the ONLY exit channel).
+#
+# Key invariants:
+#   • All file writes are atomic — `_atomic_save_pptx` / `_atomic_write_text`.
+#     Never write directly to the final path; PowerPoint opening a half-saved
+#     file is a real failure mode we already paid for once.
+#   • The CLI flag names (`--fill`, `--slide-theme`, `--text-align`,
+#     `--split-choices`, `--pptx-mode`, `--pptx-threshold`, etc.) are the IPC
+#     contract. Renaming any of them requires updating
+#     `ConversionJob._buildArgs` in main.js AND docs/IPC.md.
+#   • python-pptx 1.0 has surprises (Part.load arg order, get_or_add return
+#     type, external rel handling). See docs/PPTX_PIPELINE.md before assuming
+#     any signature.
+#   • Don't `print()` in `--ipc` mode. Use `_emit` only.
+# ─────────────────────────────────────────────────────────────────────────────
+"""SlideFluid conversion backend.
 
-Usage:
-    python slidefluid_convert.py [options] file1.pdf [file2.pdf ...]
+Invoke modes:
+    Conversion (batch):    slidefluid_convert.py [flags] file1 [file2 ...]
+    Probe — docx info:     slidefluid_convert.py --docx-info <file>
+    Probe — pptx info:     slidefluid_convert.py --pptx-info <file>
+    Probe — docx analyze:  slidefluid_convert.py --analyze <file>
+    Preflight check:       slidefluid_convert.py --preflight
 
-Options:
-    --output-dir DIR        Output folder (default: same dir as each input)
-    --dpi {72,144}          Raster DPI (default: 72)
-    --fill {black,color_match,smear}   Pillarbox fill mode (default: black)
-    --overwrite             Overwrite existing .pptx without asking
-    --skip-existing         Skip files that already have a .pptx
-    --suffix SUFFIX         Append suffix to output filenames (e.g. _CONVERTED)
-    --ipc                   Emit newline-delimited JSON progress to stdout
-                            (used by Electron IPC; suppresses human-readable output)
-
-IPC JSON schema (one object per line):
-    {"type": "start",    "file": "...", "total_files": N, "file_index": N}
-    {"type": "progress", "file": "...", "page": N, "total_pages": N, "message": "..."}
-    {"type": "done",     "file": "...", "output": "...", "slides": N}
-    {"type": "error",    "file": "...", "message": "..."}
-    {"type": "batch_done", "converted": N, "skipped": N, "errors": N, "total_slides": N}
+Full CLI flag inventory and IPC event schema: docs/IPC.md.
 """
 
 import argparse
@@ -698,6 +712,9 @@ def _parse_docx(path: Path) -> tuple[list[list[dict]], list[str]]:
         # always have a <w:numPr> block in the paragraph XML.
         if not is_bullet:
             _WML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            # ⚠ DO NOT change `{{{...}}}` to `{{...}}` — triple braces produce a
+            #   LITERAL `{` after f-string substitution (Clark notation); double
+            #   braces inline the namespace value and lxml rejects it. See docs/DOCX_TXT.md.
             is_bullet = para._p.find(f".//{{{_WML_NS}}}numPr") is not None
 
         # Blank paragraph — count them; two or more in a row = slide boundary
@@ -1177,8 +1194,13 @@ def _pptx_clone_slide(prs, src_slide, keep_animations: bool = True):
     # so the clone owns its own resources and PowerPoint stays happy.
     rid_map: dict = {}
     for rel in src_slide.part.rels.values():
+        # ⚠ DO NOT remove — clones MUST get a fresh notes pane; carrying the
+        #   source's notesSlide rel causes shared-notes corruption between
+        #   duplicates. See docs/PPTX_PIPELINE.md.
         if "notesSlide" in rel.reltype:
             continue
+        # ⚠ DO NOT skip is_external — rel.target_part is undefined for external
+        #   rels (URL hyperlinks) and accessing it raises. See docs/PPTX_PIPELINE.md.
         if rel.is_external:
             new_rid = new_slide.part.rels.get_or_add_ext_rel(rel.reltype, rel.target_ref)
         elif rel.reltype in _PPTX_OWNED_RELTYPES:
@@ -1307,6 +1329,9 @@ def _pptx_deep_copy_part(package, src_part, _memo=None, _reserved=None):
     """
     if _memo is None:
         _memo = {}
+    # ⚠ DO NOT remove _reserved — parts created inside the same recursion
+    #   aren't reachable via iter_parts() yet, so the next-free-partname scan
+    #   misses them and collides. See docs/PPTX_PIPELINE.md.
     if _reserved is None:
         _reserved = set()
     if src_part in _memo:
@@ -1357,7 +1382,7 @@ def _pptx_count_click_builds(slide) -> int:
 # least one line, long lines wrap, blanks count as gaps. A line of 800 chars
 # of prose costs the same vertical space as a line of 10 chars.
 _PPTX_NOTES_CHARS_PER_LINE = 65   # typical width of one visual line in Presenter View notes
-_PPTX_SOFT_BUFFER = 1.2           # don't split if effective_lines <= threshold * 1.2
+_PPTX_SOFT_BUFFER = 1.2           # ⚠ DO NOT tune outside 1.2–1.4 without re-checking the 13-line slide case. See docs/PPTX_PIPELINE.md.
 
 
 def _effective_lines(text: str) -> int:
@@ -1703,7 +1728,10 @@ def _pptx_companion(
             chunks = ["[no notes]"]
         builds = _pptx_count_click_builds(src_slide)
 
-        # Expansion formula
+        # ⚠ DO NOT simplify this formula. chunks[0] × (builds + 1) covers
+        #   every build-click PLUS the advance off slide 1; chunks[1..] each
+        #   cover one audience duplicate. This is the only shape that holds
+        #   the click-sync invariant. See docs/PPTX_PIPELINE.md.
         expanded = [chunks[0]] * (builds + 1) + chunks[1:]
 
         for chunk in expanded:

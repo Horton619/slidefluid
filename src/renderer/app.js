@@ -1,5 +1,37 @@
 'use strict';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SlideFluid — Renderer entry. Queue, sidebar, conversion flow, dialogs.
+//
+// ⚠ Read these topic docs before non-trivial edits:
+//   • docs/IPC.md         — handleConversionMessage, beginConversion grouping
+//   • docs/DOCX_TXT.md    — _showOverflowModal, _showBreakPicker, split flow
+//   • docs/PPTX_PIPELINE.md — _openPptxOptions, _applyPptxConfigToAll,
+//                            companion banner, Conversion Details modal
+//
+// What this file owns:
+//   • Module-level `state` (queue, selectedId, settings, isConverting).
+//   • Drop zone + file picker → addFiles() routes to per-fileType branches.
+//   • Sidebar dispatcher renders different controls per item.fileType.
+//   • `beginConversion` — groups waiting items by per-type config, spawns one
+//     backend invocation per group via window.slidefluid.startConversion,
+//     awaits batch_done between groups.
+//   • Per-mode UI: overflow modal (DOCX), Split Settings popout (PPTX),
+//     Companion banner (PPTX), update toast (auto-update).
+//
+// Key invariants:
+//   • Queue items have a `fileType` and per-type fields. `renderSidebarControls`
+//     dispatches by fileType; that's the extension point for new pipelines.
+//   • Group keys MUST match what the backend expects per docs/IPC.md.
+//     PDFs by fillMode; DOCX by slideTheme|textAlign; PPTX by
+//     mode|threshold|headers|slidenums|theme. A mismatch means files get
+//     batched together that shouldn't.
+//   • Drop-a-file auto-selects it. Don't change without considering the
+//     "accidental re-conversion of completed items" failure mode this prevents.
+//   • This file is the largest in the project (~3000 lines) and reshapes
+//     fastest. Re-read after ~5 turns of edits.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------

@@ -1,14 +1,28 @@
 'use strict';
 
-/**
- * SlideFluid 3.0 — Preload script
- *
- * Exposes a narrow, typed API surface to the renderer via contextBridge.
- * The renderer never has direct access to Node or Electron internals.
- *
- * All methods are async (return Promises) unless noted.
- * Event listeners use a subscribe/unsubscribe pattern.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// SlideFluid — Preload (contextBridge surface).
+//
+// ⚠ Read docs/IPC.md before adding to or renaming anything on
+//   `window.slidefluid`. This file IS the contract surface; every method
+//   here has a matching `ipcMain.handle` in main.js and (for event-based
+//   APIs) a matching `_emit` call site on the backend Python.
+//
+// What this file owns:
+//   • The `window.slidefluid` API — what the renderer can call. Keep narrow.
+//   • Event-listener subscribe/unsubscribe pattern (makeListener).
+//
+// Adding a method:
+//   1. Decide it's actually needed (could the renderer use an existing one?).
+//   2. Add the matching `ipcMain.handle(...)` in main.js.
+//   3. If it's a long-running flow with progress events, add a matching
+//      `webContents.send` site too, then expose a listener here.
+//   4. Update docs/IPC.md if it's part of the conversion flow.
+//
+// All methods are async (return Promises) unless noted.
+// Event listeners use a subscribe/unsubscribe pattern (makeListener returns
+// an unsubscribe function).
+// ─────────────────────────────────────────────────────────────────────────────
 
 const { contextBridge, ipcRenderer } = require('electron');
 
